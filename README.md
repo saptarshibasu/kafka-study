@@ -105,15 +105,14 @@ bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
   * Replication Factor = 3
   * min.insync.replicas = 2
   * producer acks = all
-  * 
 
-  ## Kafka Streams
+## Kafka Streams
 
-  * StreamsConfig.APPLICATION_ID_CONFIG (application.id) -
-    * Mandatory
-    * Consumer group id
-    * Internal topic name prefix
-    * Client id prefix
-  * ConsumerConfig.AUTO_OFFSET_RESET_CONFIG (auto.offset.reset) - 
-    * It's applicable when the consumer group doesn't have any offset associated in Kafka
-    * The possible values are - earliest (read the messages from the begining), latest (read the new messages)
+* StreamsConfig.APPLICATION_ID_CONFIG (application.id) -
+  * Mandatory
+  * Consumer group id
+  * Internal topic name prefix
+  * Client id prefix
+* ConsumerConfig.AUTO_OFFSET_RESET_CONFIG (auto.offset.reset) - 
+  * It's applicable when the consumer group doesn't have any offset associated in Kafka
+  * The possible values are - earliest (read the messages from the begining), latest (read the new messages)
