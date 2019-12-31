@@ -38,11 +38,31 @@ bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
 * Kafka is a **distributed, partitioned, replicated** commit log service
 * Data is organized among topics
 * Each topic is partitioned
+* Partitions server two purposes -
+  * Allow storing more records a single machine can hold
+  * Server as a unit of parallelism
 * Each partition can have multiple replicas
 * Each broker hosts hundreds or thousands of replicas belonging to different topics
 * Replication factor must be less than or equal to the number of brokers up and running
 * Kafka recommends using replication for durability and not set the disk flush parameters
+* Kafka's performance is effectively constant with respect to data size so storing data for a long time is not a problem
+* If all the consumer instances have the same consumer group, then the records will effectively be load balanced over the consumer instances
+* If all the consumer instances have different consumer groups, then each record will be broadcast to all the consumer processes
+* Kafka only provides a total order over records within a partition, not between different partitions in a topic
+* Each consumer instance in a consumer group is the exclusive consumer of a "fair share" of partitions at any point in time
 * As Kafka writes its data to local disk, the data may linger in the filesystem cache and may not make its way to the disk. Therefore Kafka relies solely on replication for reliability
+* All data is immediately written to a persistent log on the filesystem without necessarily flushing to disk. In effect this just means that it is transferred into the kernel's pagecache
+* Kafka performance
+  * Modern operating systems are designed to aggressively use the available memory as page cache
+  * Compact byte structure rather than Java objects reducing Java Object ovehead
+  * Not having an in-process cache for messages making more memory available for page cache & reducing garbage collection issues with increased in-heap data
+  * Simple reads and appends to file resulting in sequential disk access
+  * Transfer batches of messages over the network to amortize the network roundtrip, larger sequential disk access, contiguous memory blocks
+  * Zero-copy - `sendfile` system call of Linux to reduce byte copying and context switches
+  * Standardized binary format shared by producer, broker & consumer
+  * Compression of message batch saves network bandwidth and also gives good compression ration due to repitations within multiple messages of the same batch
+  * No intervening routing tier. Messages of a given partition are sent directly to the partiotion leader
+  * Consumers use "long poll" to avoid busy waiting and ensure larger transfer sizes
 * Two types of replicas
   * **Leader replica** - 
     * Each partition has a leader replica
@@ -108,6 +128,8 @@ bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
   * `message.max.bytes` indicates the compressed message size
   * `fetch.message.max.bytes` (consumer) & `replica.fetch.max.bytes` must match with `message.max.bytes`
   * Larger `message.max.bytes` will impact disk I/O throughput
+* **Idempotence** - `enable.idempotence`
+  * Each producer will be assigned a PID by the broker
 * **Hardware & OS**
   * Kafka brokers with a larger page cache helps in better consumer client performnce provided the consumers are lagging only a little from the producer. This ensures that the broker doen't need to reread the messages from the disk. Therefore, it is recommended not to run any other application in the broker host
   * On AWS, for lower latency I/O optimized instances will be good
@@ -149,10 +171,13 @@ bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
 * `key.serializer`
 * `value.serializer`
 * Kafka producer object can be used by multiple threads. Once we reach a state where adding more threads do not improve performance, new producer object can be created
-* `buffer.memory` - The memory buffer that will store the messages before being sent out to a broker. If the buffer runs out of space, the thread will remain blocked for `max.block.ms` before throwing an exception
+* `buffer.memory` - The memory buffer that will store the messages before being sent out to a broker. If the buffer runs out of space, the thread will remain blocked for `max.block.ms` before throwing an exception. This setting should correspond roughly to the total memory the producer will use, but is not a hard bound since not all memory the producer uses is used for buffering. Some additional memory will be used for compression (if compression is enabled) as well as for maintaining in-flight requests
 * `compression.type` - By default messages are uncompressed. Supported compression algorithms - `gzip`, `snappy`, `lz4` and `zstd`
-* `retries` - In case of retriable errors, the producer will retry these many times at an interval of `retry.backoff.ms`
+* `retries` - In case of retriable errors, the producer will retry these many times at an interval of `retry.backoff.ms`. Allowing retries without setting max.in.flight.requests.per.connection to 1 will potentially change the ordering of records because if two batches are sent to a single partition, and the first fails and is retried but the second succeeds, then the records in the second batch may appear first. Note additionally that produce requests will be failed before the number of retries has been exhausted if the timeout configured by `delivery.timeout.ms` expires first before successful acknowledgement. Users should generally prefer to leave this config unset and instead use `delivery.timeout.ms` to control retry behavior
 * `batch.size` - When multiple records are sent to the same partition, the producer will batch them together. This parameter controls the amount of memory in bytes (not messages!) that will be used for each batch
+* `linger.ms` - linger.ms controls the amount of time to wait for additional messages before sending the current batch. KafkaProducer sends a batch of messages either when the current batch is full or when the linger.ms limit is reached
+* `client.id` - This can be any string, and will be used by the brokers to identify messages sent from the client. It is used in logging and metrics, and for quotas
+* 
 
 ## Kafka Streams
 
