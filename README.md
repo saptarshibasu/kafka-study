@@ -35,48 +35,66 @@ bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
 
 ## Kafka Basics
 
-* Kafka is a **distributed, partitioned, replicated** commit log service
-* Data is organized among topics
-* Each topic is partitioned
-* Partitions server two purposes -
-  * Allow storing more records a single machine can hold
-  * Server as a unit of parallelism
-* Each partition can have multiple replicas
-* Each broker hosts hundreds or thousands of replicas belonging to different topics
-* Replication factor must be less than or equal to the number of brokers up and running
-* Kafka recommends using replication for durability and not set the disk flush parameters
-* Kafka's performance is effectively constant with respect to data size so storing data for a long time is not a problem
-* If all the consumer instances have the same consumer group, then the records will effectively be load balanced over the consumer instances
-* If all the consumer instances have different consumer groups, then each record will be broadcast to all the consumer processes
-* Kafka only provides a total order over records within a partition, not between different partitions in a topic
-* Each consumer instance in a consumer group is the exclusive consumer of a "fair share" of partitions at any point in time
-* As Kafka writes its data to local disk, the data may linger in the filesystem cache and may not make its way to the disk. Therefore Kafka relies solely on replication for reliability
-* All data is immediately written to a persistent log on the filesystem without necessarily flushing to disk. In effect this just means that it is transferred into the kernel's pagecache
-* Kafka performance
-  * Modern operating systems are designed to aggressively use the available memory as page cache
+* **Basics**
+  * Kafka is a **distributed, partitioned, replicated** commit log service
+  * Data is organized among topics
+  * Each topic is partitioned
+  * Partitions are evenly distributed across the available brokers to distribute the load evenly
+  * Typically, there will be many more partitions than servers or brokers
+  * Partitions serves two purposes -
+    * Allow storing more records a single machine can hold
+    * Server as a unit of parallelism
+  * Kafka's performance is effectively constant with respect to data size so storing data for a long time is not a problem
+  * Producers and Consumers are Kafka clients
+  * If all the consumer instances have the same consumer group, then the records will effectively be load balanced over the consumer instances
+  * If all the consumer instances have different consumer groups, then each record will be broadcast to all the consumer processes
+  * Kafka only provides a total order over records within a partition, not between different partitions in a topic
+  * Each consumer instance in a consumer group is the exclusive consumer of a "fair share" of partitions at any point in time
+  * As Kafka writes its data to local disk, the data may linger in the filesystem cache and may not make its way to the disk. Therefore Kafka relies solely on replication for reliability
+  * In Linux, data written to the filesystem is maintained in pagecache until it must be written out to disk (due to an application-level fsync or the OS's own flush policy)
+* **Kafka Performance**
+  * Modern operating systems are designed to aggressively use the available memory as page cache. Thus if the server hosting Kafka broker is not used for other applications, more page cache will be available for Kafka
+  * When consumers are lagging only a little from the producer, the broker doesn't need to reread the messages from the disk. The requests can be served directly from the page cache
   * Compact byte structure rather than Java objects reducing Java Object ovehead
   * Not having an in-process cache for messages making more memory available for page cache & reducing garbage collection issues with increased in-heap data
   * Simple reads and appends to file resulting in sequential disk access
-  * Transfer batches of messages over the network to amortize the network roundtrip, larger sequential disk access, contiguous memory blocks
+  * Transfer batches of messages over the network to amortize the network roundtrip, do larger sequential disk access, allocate contiguous memory blocks, provides good compression ratio
   * Zero-copy - `sendfile` system call of Linux to reduce byte copying and context switches
-  * Standardized binary format shared by producer, broker & consumer
-  * Compression of message batch saves network bandwidth and also gives good compression ration due to repitations within multiple messages of the same batch
-  * No intervening routing tier. Messages of a given partition are sent directly to the partiotion leader
+  * Standardized binary format shared by producer, broker & consumer reducing recopying & transformation
+  * Compression of message batch saves network bandwidth
+  * No intervening routing tier. Messages of a given partition are sent directly to the partition leader
   * Consumers use "long poll" to avoid busy waiting and ensure larger transfer sizes
-* Two types of replicas
-  * **Leader replica** - 
-    * Each partition has a leader replica
-    * All producer & consumer requests go through the leader replica to guarantee consistencies
-    * Leaders keep track of the last offsets fetched by each replica
-    * Preferred leader - The replica that was the leader when the topic was original created
-    * When the preferred leader is indeed the leader, the load is expected to be more evenly distributed among the brokers
-    * By default, Kafka is configured with `auto.leader.rebalance.enable=true`, which will check if the preferred leader replica is not the current leader and trigger leader election to make the preferred leader the current leader if it is in-sync 
-  * **Follower replica** -
-    * All other replicas are followers
-    * In the event of leader replica failure, one of the follower replicas will be promoted as leader
-    * Followers don't serve client request
-    * Their only job is to replicate messages from the leader and stay in sync with the leader
-    * Only in-sync replicas are eligible to be elected as leader in the event of leader failure
+* **Replication**
+  * Each partition can have multiple replicas
+  * Each broker hosts hundreds or thousands of replicas belonging to different topics
+  * Replication factor must be less than or equal to the number of brokers up and running
+  * Kafka recommends using replication for durability and not set the disk flush parameters
+  * Each partition has a leader replica
+  * All producer & consumer requests go through the leader replica to guarantee consistencies
+  * Leaders keep track of the last offsets fetched by each replica
+  * For each partition, Kafka stores in Zookeeper the current leader and the current In-sync replicas (ISR)
+  * Preferred leader - The replica that was the leader when the topic was original created
+  * When the preferred leader is indeed the leader, the load is expected to be more evenly distributed among the brokers
+  * By default, Kafka is configured with `auto.leader.rebalance.enable=true`, which will check if the preferred leader replica is not the current leader and trigger leader election to make the preferred leader the current leader if it is in-sync 
+  * All other replicas (other than the leader replica) are followers
+  * In the event of leader replica failure, one of the follower replicas will be promoted as leader
+  * Followers don't serve client request
+  * Their only job is to replicate messages from the leader and stay in sync with the leader
+  * Each follower constantly pulls new messages from the leader using a single socket channel. That way, the follower receives all messages in the same order as written in the leader
+  * A message is considered committed when all the ISR have been updated
+  * * The follower writes each received message to its own log and sends an acknowledgment back to the leader. Once the leader receives the acknowledgment from all replicas in ISR, the message is committed. The leader advances the HW and sends an acknowledgment to the client
+  * If the leader replica detects that a follower has fallen behind significantly or is not available, it removes the follower from the ISR. Thus it is possible to have only one ISR (the leader itself) unless the `min.insync.replicas` is set to a value > 1
+  * Only in-sync replicas are eligible to be elected as leader in the event of leader failure
+  * Every replica maintains some important offset positions
+    * HW (High Water Mark) - Offset of the last committed message
+    * LEO (Log End Offset)
+  * Leader replica advances its HW after receiving acknowledgement from all the ISR and then sends the response to the client
+  * Leader replica shares its HW to the followers by piggybacking with the return value of the fetch requests from the followers
+  * From time to time, followers checkpoints it HW to its local disk
+  * When a follower comes back after failure, it truncates all the logs after the last check pointed HW and then reads all the logs from the leader after the HW
+  * When a partition leader fails, the new leader chooses its LEO as HW (Follower LEO is usually behind leader HW)
+  * When a new partition leader is elected, the followers truncate their logs after the last check pointed HW and then read all the logs from the new leader after the HW
+  * The new partition leader (before making it available for reads and writes by clients) waits until all the surviving ISR have caught up or a configured period has passed
 * **Insync replica conditions** - 
   * It is a leader, or
   * It is a follower replica, and
@@ -131,7 +149,6 @@ bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
 * **Idempotence** - `enable.idempotence`
   * Each producer will be assigned a PID by the broker
 * **Hardware & OS**
-  * Kafka brokers with a larger page cache helps in better consumer client performnce provided the consumers are lagging only a little from the producer. This ensures that the broker doen't need to reread the messages from the disk. Therefore, it is recommended not to run any other application in the broker host
   * On AWS, for lower latency I/O optimized instances will be good
   * Extents File System (XFS) & ZFS perform well for Kafka Workload
   * the mountpoints should have `noatime` option set to eliminate the 
