@@ -26,7 +26,7 @@
 
 - [Miscellaneous](#kafka-miscellaneous)
 
-  - [Hardware & OS](#hardware-&-os)
+  - [Hardware & OS](#hardware-os)
 
   - [ZooKeeper Basics](#zooKeeper-basics)
 
