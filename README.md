@@ -260,7 +260,7 @@ bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
 
 ## Miscellaneous
 
-### Hardware & OS
+### Hardware OS
 
   * On AWS, for lower latency I/O optimized instances will be good
   * Extents File System (XFS) & ZFS perform well for Kafka Workload
