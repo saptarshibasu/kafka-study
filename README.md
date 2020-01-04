@@ -2,6 +2,39 @@
 
 **Kafka Latest Version - 2.4.0**
 
+[Commands](#commands)
+
+[Kafka Basics](#kafka-basics)
+
+  [Introduction](#introduction)
+
+  [Performance](#performance)
+
+  [Replication](#replication)
+
+  [Retention](#retention)
+
+  [Delivery Symantics](#delivery-symantics)
+
+[Kafka Producers](#kafka-producers)
+
+[Kafka Consumers](#kafka-consumers)
+
+[Kafka Streams](#kafka-streams)
+
+[Kafka Connect](#kafka-connect)
+
+[Miscellaneous](#kafka-miscellaneous)
+
+  [Hardware & OS](#hardware-&-os)
+
+  [ZooKeeper Basics](#zooKeeper-basics)
+
+  [Avro Basics](#avro-basics)
+
+[References](#references)
+
+
 ## Commands
 
 ```
