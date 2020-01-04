@@ -98,15 +98,6 @@ bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
 * **Internal topics**
   * __transaction_state
   * __consumer_offsets
-* * **Message Reliability (Typical Scenario)**
-  * Replication Factor = 3
-  * min.insync.replicas = 2 (Consumers won't get message until the message is committed i.e. all in-sync replicas are updated)
-  * producer acks = all (Producers won't get acknowledgement until all the in-sync replicas are updated)
-* **Message Size**
-  * `message.max.bytes` defaults to 1MB
-  * `message.max.bytes` indicates the compressed message size
-  * `fetch.message.max.bytes` (consumer) & `replica.fetch.max.bytes` must match with `message.max.bytes`
-  * Larger `message.max.bytes` will impact disk I/O throughput
 
 
 ### Performance
@@ -203,10 +194,49 @@ bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
 
 ### Delivery Symantics
 
+* Kafka supports
+  * At most once — Messages may be lost but are never redelivered.
+  * At least once — Messages are never lost but may be redelivered.
+  * Exactly once — this is what people actually want, each message is delivered once and only once.
 * **Idempotence** - `enable.idempotence`
   * Each producer will be assigned a PID by the broker
 
 ## Kafka Producers
+
+* `KafkaProducer<K,V>` is thread safe and sharing a single producer instance across threads will generally be faster than having multiple instances
+* The `send()` method is asynchronous. When called it adds the record to a buffer of pending record sends and immediately returns
+* The producer maintains buffers of unsent records for each partition. These buffers are of a size specified by the `batch.size config`
+* If the buffer is full or metadat is not available, the `send()` method blocks for `max.block.ms` and throws a `TimeoutException` after that
+* **Message Reliability (Typical Scenario)**
+  * **Producer Config**
+    ```
+    # Producers won't get acknowledgement until all the in-sync replicas are updated
+    acks = all
+
+    # Default value. With idempotence enabled, there is no risk of duplicates
+    retries = Integer.MAX_VALUE 
+
+    # To get exacly once delivery symantic
+    enable.idempotence = true
+
+    # Default value. With idempotence enabled, there won't be any duplicate and it cannot be more than 5
+    max.in.flight.requests.per.connection = 5
+
+    # Default value. Should be >= request.timeout.ms and linger.ms. An upper bound on the time to report success or failure after a call to send()
+    # Retries will stop after this duration
+    delivery.timeout.ms = 120000
+    ```
+    **Broker / Topic Config**
+    ```
+    default.replication.factor = 3
+
+    # Consumers won't get message until the message is committed i.e. all in-sync replicas are updated
+    min.insync.replicas = 2
+    ```
+* **Mandatory Parameters**
+  * `key.serializer`
+  * `value.serializer`
+  * `bootstrap.servers`
 
 * `acks=0`
   * The producer will not wait for reply from the broker
@@ -225,14 +255,17 @@ bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
 * `bootstrap.servers` - List host:port of brokers. All brokers need not be present and the producer will discover about other brokers from metadata. However, more than one broker should be specified so that the producer can connect even in the event of a broker failure
 * `key.serializer`
 * `value.serializer`
-* Kafka producer object can be used by multiple threads. Once we reach a state where adding more threads do not improve performance, new producer object can be created
 * `buffer.memory` - The memory buffer that will store the messages before being sent out to a broker. If the buffer runs out of space, the thread will remain blocked for `max.block.ms` before throwing an exception. This setting should correspond roughly to the total memory the producer will use, but is not a hard bound since not all memory the producer uses is used for buffering. Some additional memory will be used for compression (if compression is enabled) as well as for maintaining in-flight requests
 * `compression.type` - By default messages are uncompressed. Supported compression algorithms - `gzip`, `snappy`, `lz4` and `zstd`
 * `retries` - In case of retriable errors, the producer will retry these many times at an interval of `retry.backoff.ms`. Allowing retries without setting max.in.flight.requests.per.connection to 1 will potentially change the ordering of records because if two batches are sent to a single partition, and the first fails and is retried but the second succeeds, then the records in the second batch may appear first. Note additionally that produce requests will be failed before the number of retries has been exhausted if the timeout configured by `delivery.timeout.ms` expires first before successful acknowledgement. Users should generally prefer to leave this config unset and instead use `delivery.timeout.ms` to control retry behavior
 * `batch.size` - When multiple records are sent to the same partition, the producer will batch them together. This parameter controls the amount of memory in bytes (not messages!) that will be used for each batch
 * `linger.ms` - linger.ms controls the amount of time to wait for additional messages before sending the current batch. KafkaProducer sends a batch of messages either when the current batch is full or when the linger.ms limit is reached
 * `client.id` - This can be any string, and will be used by the brokers to identify messages sent from the client. It is used in logging and metrics, and for quotas
-
+* **Message Size**
+  * `message.max.bytes` defaults to 1MB
+  * `message.max.bytes` indicates the compressed message size
+  * `fetch.message.max.bytes` (consumer) & `replica.fetch.max.bytes` must match with `message.max.bytes`
+  * Larger `message.max.bytes` will impact disk I/O throughput
 
 ## Kafka Consumers
 
