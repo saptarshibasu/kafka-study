@@ -327,22 +327,22 @@ bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
 
 ### Hardware OS
 
-  * On AWS, for lower latency I/O optimized instances will be good
-  * Extents File System (XFS) & ZFS perform well for Kafka Workload
-  * the mountpoints should have `noatime` option set to eliminate the 
-  * export KAFKA_JVM_PERFORMANCE_OPTS="-server -XX:+UseG1GC -XX:MaxGCPauseMillis=20 -XX:InitiatingHeapOccupancyPercent=35 -XX:+DisableExplicitGC -Djava.awt.headless=true"
-  * `vm.swappiness = 1` - A low value means the kernel will try to avoid swapping as much as possible making less memory available for page cache
-  * `vm.dirty_background_ratio = 5` (default - 10) - The percentage of system memory which when dirty, system will start writing to disk
-  * `vm.dirty_ratio = 60` (default - 15) - The percentage of memory which when dirty, the process doing writes would block and write out dirty pages to the disks
-  * Tuning `vm.dirty_background_ratio` and `vm.dirty_ratio` as above relies on:
-    * Good disk I/O performance (SSD or RAID)
-    * Replication is used in the cluster to guard against system failure
-  * `net.core.wmem_default = 131072` (128 KiB)
-  * `net.core.rmem_default = 131072` (128 KiB)
-  * `net.core.wmem_max = 131072` (128 KiB)
-  * `net.core.rmem_max = 2097152` (2 MiB)
-  * `net.ipv4.tcp_wmem = 4096 65536 2048000` (4 KiB 64 KiB 2 MiB)
-  * `net.ipv4.tcp_rmem = 4096 65536 2048000` (4 KiB 64 KiB 2 MiB)
+* On AWS, for lower latency I/O optimized instances will be good
+* Extents File System (XFS) & ZFS perform well for Kafka Workload
+* the mountpoints should have `noatime` option set to eliminate the 
+* export KAFKA_JVM_PERFORMANCE_OPTS="-server -XX:+UseG1GC -XX:MaxGCPauseMillis=20 -XX:InitiatingHeapOccupancyPercent=35 -XX:+DisableExplicitGC-Djava.awt.headless=true"
+* `vm.swappiness = 1` - A low value means the kernel will try to avoid swapping as much as possible making less memory available for page cache
+* `vm.dirty_background_ratio = 5` (default - 10) - The percentage of system memory which when dirty, system will start writing to disk
+* `vm.dirty_ratio = 60` (default - 15) - The percentage of memory which when dirty, the process doing writes would block and write out dirty pages to thedisks
+* Tuning `vm.dirty_background_ratio` and `vm.dirty_ratio` as above relies on:
+  * Good disk I/O performance (SSD or RAID)
+  * Replication is used in the cluster to guard against system failure
+* `net.core.wmem_default = 131072` (128 KiB)
+* `net.core.rmem_default = 131072` (128 KiB)
+* `net.core.wmem_max = 131072` (128 KiB)
+* `net.core.rmem_max = 2097152` (2 MiB)
+* `net.ipv4.tcp_wmem = 4096 65536 2048000` (4 KiB 64 KiB 2 MiB)
+* `net.ipv4.tcp_rmem = 4096 65536 2048000` (4 KiB 64 KiB 2 MiB)
 
 ### ZooKeeper Basics
 
