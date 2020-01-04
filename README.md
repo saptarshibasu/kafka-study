@@ -14,7 +14,11 @@
 
   - [Retention](#retention)
 
+  - [Rebalancing](#rebalancing)
+
   - [Delivery Symantics](#delivery-symantics)
+
+  - [Broker Config](#broker-config)
 
 - [Kafka Producers](#kafka-producers)
 
@@ -95,6 +99,7 @@ bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
   * Leaders of partitions of topics
   * Delegation tokens
   * ACLs
+  * List of consumer groups owned by a Co-ordinator and their membership information
 * **Internal topics**
   * __transaction_state
   * __consumer_offsets
@@ -192,6 +197,32 @@ bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
   * `log.retention.ms`, `log.retention.minutes` & `log.retention.hours` - If more than one of these parameters are set, the smallest unit takes precedence
   * If both log retention by size and time are configured, messages will be removed when either criteria is met
 
+### Rebalancing
+
+* Rebalancing is the process where a group of consumer instances (belonging to the same group) co-ordinate to own a mutually exclusive set of partitions of       topics that the group has subscribed to
+* Every partition for all subscribed topics will be owned by a single consumer instance
+* One of the brokers is elected as the coordinator for a subset of the consumer groups
+* Co-ordinator role
+  * Triggering rebalancing whenever required (new members connect with co-ordinator, failed consumers are identified by failure detection run by the co-ordinator)
+  * Communicating the resulting partition-consumer ownership configuration to all consumers of the group undergoing a rebalance operation
+* Essentially, a rebalance kicks in when following conditions are met:
+  * Group membership changes, such as a new member joining
+  * Member subscription changes, such as one consumer changing the subscribed topics
+  * Resource changes, such as adding more partitions to the subscribed topic
+* Stages
+  * Rebalance - 
+    * Kill the socket connection to any consumers in the group
+    * The consumers re-register with the co-ordinator
+  * Sync
+    * The group coordinator replies to all members with the latest generation information to fence off any previous generation consumers
+    * Nominates one of the members as the leader and replies to the leader with encoded membership and subscription metadata
+    * The leader shall complete the assignment based on membership and topic metadata information, and reply to the coordinator with the assignment information
+    * All the followers are required to send a sync group request to get their actual assignments
+    * Co-ordinator responds back with the assignment information
+  * Stable
+* Static membership with `group.instance.id` so that the same set of partitions are assigned back to the member after restart without a fresh rebalancing
+
+
 ### Delivery Symantics
 
 * Kafka supports
@@ -200,6 +231,14 @@ bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
   * Exactly once — this is what people actually want, each message is delivered once and only once.
 * **Idempotence** - `enable.idempotence`
   * Each producer will be assigned a PID by the broker
+
+### Broker Config
+
+* **Message Size**
+  * `message.max.bytes` defaults to 1MB
+  * `message.max.bytes` indicates the compressed message size
+  * `fetch.message.max.bytes` (consumer) & `replica.fetch.max.bytes` must match with `message.max.bytes`
+  * Larger `message.max.bytes` will impact disk I/O throughput
 
 ## Kafka Producers
 
@@ -231,13 +270,13 @@ bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
     default.replication.factor = 3
 
     # Consumers won't get message until the message is committed i.e. all in-sync replicas are updated
+    # If 2 ISR are not available, the producer will throw an exception (either NotEnoughReplicas or NotEnoughReplicasAfterAppend)
     min.insync.replicas = 2
     ```
 * **Mandatory Parameters**
   * `key.serializer`
   * `value.serializer`
-  * `bootstrap.servers`
-
+  * `bootstrap.servers` - List host:port of brokers. All brokers need not be present and the producer will discover about other brokers from metadata. However, more than one broker should be specified so that the producer can connect even in the event of a broker failure
 * `acks=0`
   * The producer will not wait for reply from the broker
   * Message loss is possible
@@ -252,27 +291,20 @@ bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
   * The producer will receive a success response after all the in-sync replicas received the message
   * Message is durable
   * Latency is high
-* `bootstrap.servers` - List host:port of brokers. All brokers need not be present and the producer will discover about other brokers from metadata. However, more than one broker should be specified so that the producer can connect even in the event of a broker failure
-* `key.serializer`
-* `value.serializer`
 * `buffer.memory` - The memory buffer that will store the messages before being sent out to a broker. If the buffer runs out of space, the thread will remain blocked for `max.block.ms` before throwing an exception. This setting should correspond roughly to the total memory the producer will use, but is not a hard bound since not all memory the producer uses is used for buffering. Some additional memory will be used for compression (if compression is enabled) as well as for maintaining in-flight requests
 * `compression.type` - By default messages are uncompressed. Supported compression algorithms - `gzip`, `snappy`, `lz4` and `zstd`
-* `retries` - In case of retriable errors, the producer will retry these many times at an interval of `retry.backoff.ms`. Allowing retries without setting max.in.flight.requests.per.connection to 1 will potentially change the ordering of records because if two batches are sent to a single partition, and the first fails and is retried but the second succeeds, then the records in the second batch may appear first. Note additionally that produce requests will be failed before the number of retries has been exhausted if the timeout configured by `delivery.timeout.ms` expires first before successful acknowledgement. Users should generally prefer to leave this config unset and instead use `delivery.timeout.ms` to control retry behavior
 * `batch.size` - When multiple records are sent to the same partition, the producer will batch them together. This parameter controls the amount of memory in bytes (not messages!) that will be used for each batch
 * `linger.ms` - linger.ms controls the amount of time to wait for additional messages before sending the current batch. KafkaProducer sends a batch of messages either when the current batch is full or when the linger.ms limit is reached
 * `client.id` - This can be any string, and will be used by the brokers to identify messages sent from the client. It is used in logging and metrics, and for quotas
-* **Message Size**
-  * `message.max.bytes` defaults to 1MB
-  * `message.max.bytes` indicates the compressed message size
-  * `fetch.message.max.bytes` (consumer) & `replica.fetch.max.bytes` must match with `message.max.bytes`
-  * Larger `message.max.bytes` will impact disk I/O throughput
 
 ## Kafka Consumers
 
 * If all the consumer instances have the same consumer group, then the records will effectively be load balanced over the consumer instances
 * If all the consumer instances have different consumer groups, then each record will be broadcast to all the consumer processes
 * Each consumer instance in a consumer group is the exclusive consumer of a "fair share" of partitions at any point in time
-
+* `session.timeout.ms` defines how long the coordinator waits after the member’s last heartbeat before it assuming the member failed
+  * With a low value, a network jitter or a long garbage collection (GC) might fail the liveness check, causing the group coordinator to remove this member and begin rebalancing
+  * With a longer value, there will be a longer partial unavailability when a consumer actually fails
 
 ## Kafka Streams
 
@@ -331,3 +363,4 @@ bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
 * https://cwiki.apache.org/confluence/collector/pages.action?key=KAFKA
 * https://kafka.apache.org/
 * Udemy courses by https://www.udemy.com/user/stephane-maarek/
+* https://www.confluent.io/blog/
