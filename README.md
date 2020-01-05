@@ -277,6 +277,7 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
   * `message.max.bytes` indicates the compressed message size
   * `fetch.message.max.bytes` (consumer) & `replica.fetch.max.bytes` must match with `message.max.bytes`
   * Larger `message.max.bytes` will impact disk I/O throughput
+  * `compression.type` - Accepts the standard compression codecs ('gzip', 'snappy', 'lz4', 'zstd'). It additionally accepts 'uncompressed' which is equivalent    to no compression; and 'producer' which means retain the original compression codec set by the producer
 
 ## Kafka Producers
 
@@ -352,6 +353,30 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 * In case the offsets fail to replicate within a configurable timeout, the offset commit will fail and the consumer may retry the commit after backing off
 * The brokers periodically compact the offsets topic since it only needs to maintain the most recent offset commit per partition
 * The coordinator also caches the offsets in an in-memory table in order to serve offset fetches quickly
+* **Mandatory Parameters** - 
+  * `key.deserializer`
+  * `value.deserializer`
+  * `bootstrap.servers`
+  * `fetch.min.bytes` - The minimum amount of data the server should return for a fetch request. If insufficient data is available the request will wait for      that much data to accumulate before answering the request. The default setting of 1 byte means that fetch requests are answered as soon as a single byte of   data is available or the fetch request times out waiting for data to arrive. Setting this to something greater than 1 will cause the server to wait for       larger amounts of data to accumulate which can improve server throughput a bit at the cost of some additional latency
+  * `group.id` - A unique string that identifies the consumer group this consumer belongs to. This property is required if the consumer uses either the group     management functionality by using subscribe(topic) or the Kafka-based offset management strategy
+  * `heartbeat.interval.ms` - The expected time between heartbeats to the consumer coordinator when using Kafka's group management facilities. Heartbeats are     used to ensure that the consumer's session stays active and to facilitate rebalancing when new consumers join or leave the group. The value must be set       lower than session.timeout.ms, but typically should be set no higher than 1/3 of that value. It can be adjusted even lower to control the expected time for   normal rebalances
+  * `max.partition.fetch.bytes` - The maximum amount of data per-partition the server will return. Records are fetched in batches by the consumer. If the first   record batch in the first non-empty partition of the fetch is larger than this limit, the batch will still be returned to ensure that the consumer can make   progress. The maximum record batch size accepted by the broker is defined via `message.max.bytes` (broker config) or `max.message.bytes` (topic config)
+  * `session.timeout.ms` - The timeout used to detect client failures when using Kafka's group management facility. The client sends periodic heartbeats to       indicate its liveness to the broker. If no heartbeats are received by the broker before the expiration of this session timeout, then the broker will remove   this client from the group and initiate a rebalance. Note that the value must be in the allowable range as configured in the broker configuration by          `group.min.session.timeout.ms` and `group.max.session.timeout.ms`
+  * `allow.auto.create.topics` - Should be set to false in production as there is no way to validate topic name
+  * `auto.offset.reset` - What to do when there is no initial offset in Kafka or if the current offset does not exist any more on the server (e.g. because that   data has been deleted). Default value is `latest`
+  * `max.poll.interval.ms` - The maximum delay between invocations of `poll()` when using consumer group management. This places an upper bound on the amount     of time that the consumer can be idle before fetching more records. If `poll()` is not called before expiration of this timeout, then the consumer is         considered failed and the group will rebalance in order to reassign the partitions to another member. For consumers using a non-null `group.instance.id`      which reach this timeout, partitions will not be immediately reassigned. Instead, the consumer will stop sending heartbeats and partitions will be            reassigned after expiration of session.timeout.ms
+  * `enable.auto.commit` - If true the consumer's offset will be periodically committed in the background. Default value is true and must be set to false in      production 
+  * **Handling polls for unpredictable message processing time**
+    * Move message processing to another thread
+    * Allow the consumer to continue calling poll while the processor is still working
+    * Some care must be taken to ensure that committed offsets do not get ahead of the actual position
+    * Typically, you must disable automatic commits and manually commit processed offsets for records only after the thread has finished handling them 
+    * Note also that you will need to pause the partition so that no new records are received from poll until after thread has finished handling those            previously returned
+  * Setting `enable.auto.commit` means that offsets are committed automatically with a frequency controlled by the config `auto.commit.interval.ms` giving us     "at most once" i.e. commiting before the message processing is complete
+  * Users can also control when records should be considered as consumed and hence commit their offsets. We will manually commit the offsets only after the       corresponding records have been inserted into the database. This gives us "at least once" delivery semantic where the message will be delivered once, but     in failure cases, it could be possibly delivered twice
+  * The consumer application need not use Kafka's built-in offset storage, it can store offsets in a store of its own choosing. The primary use case for this     is allowing the application to store both the offset and the results of the consumption in the same system in a way that both the results and offsets are     stored atomically. This will give us "exactly-once" semantics
+  * **Key Methods of Consumer API**
+    * 
 
 ## Kafka Streams
 
