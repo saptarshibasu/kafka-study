@@ -18,6 +18,8 @@
 
   - [Delivery Symantics](#delivery-symantics)
 
+  - [Quota](#quota)
+
   - [Broker Config](#broker-config)
 
 - [Kafka Producers](#kafka-producers)
@@ -103,12 +105,24 @@ bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
 * **Internal topics**
   * __transaction_state
   * __consumer_offsets
-
+* CRC32 is used to check if the messages are corrupted
+* **Shutdown** - When a server is stopped gracefully it has two optimizations it will take advantage of:
+  * It will sync all its logs to disk to avoid needing to do any log recovery when it restarts (i.e. validating the checksum for all messages in the tail of the log). Log recovery takes time so this speeds up intentional restarts.
+  * It will migrate any partitions the server is the leader for to other replicas prior to shutting down. This will make the leadership transfer faster and minimize the time each partition is unavailable to a few milliseconds.
+* Syncing the logs will happen automatically whenever the server is stopped other than by a hard kill, but the controlled leadership migration requires using a   special setting:
+  ```
+  controlled.shutdown.enable=true
+  ```
+* Note that controlled shutdown will only succeed if all the partitions hosted on the broker have replicas (i.e. the replication factor is greater than 1 and     at least one of these replicas is alive)
 
 ### Performance
 
 * Modern operating systems are designed to aggressively use the available memory as page cache. Thus if the server hosting Kafka broker is not used for other applications, more page cache will be available for Kafka
 * When consumers are lagging only a little from the producer, the broker doesn't need to reread the messages from the disk. The requests can be served directly from the page cache
+* Using pagecache has several advantages over an in-process cache for storing data that will be written out to disk:
+  * The I/O scheduler will batch together consecutive small writes into bigger physical writes which improves throughput.
+  * The I/O scheduler will attempt to re-sequence writes to minimize movement of the disk head which improves throughput.
+  * It automatically uses all the free memory on the machine
 * Compact byte structure rather than Java objects reduces Java Object ovehead
 * Not having an in-process cache for messages makes more memory available for page cache & reduces garbage collection issues with increased in-heap data
 * Simple reads and appends to file resulting in sequential disk access
@@ -118,6 +132,8 @@ bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
 * Compression of message batch saves network bandwidth
 * No intervening routing tier. Messages of a given partition are sent directly to the partition leader
 * Consumers use "long poll" to avoid busy waiting and ensure larger transfer sizes
+
+Note: Application level flushing (fsync) gives less leeway to the OS to optimize the writes. The Linux fsync implementation blocks all writes to the file, whereas the OS level flushing makes more granular level locks
 
 ### Replication
 
@@ -174,6 +190,7 @@ bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
   * fetches metadata information when metadata.max.age.ms expires or "Not a leader" error is returned (partition leader moved to a different broker due to failure)
   * Metadata requests can be sent to any broker because all brokers cache this information
 * Kafka consumer stores the last offset read in a special Kafka topic
+* If all the replicas crash, the data that is committed but not written to the disk are lost
 
 ### Retention 
 
@@ -232,8 +249,29 @@ bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
 * **Idempotence** - `enable.idempotence`
   * Each producer will be assigned a PID by the broker
 
+### Quota
+
+* Broker config
+  ```
+  quota.window.num
+  quota.window.size.seconds
+  replication.quota.window.num
+  replication.quota.window.size.seconds
+  ```
+* `quota.window.num` or `replication.quota.window.num` specifies the number of samples to be retained in memory for the calculation
+* `Throttle Time = (overall produced in window - quotabound)/Quota limit per second`
+* If the client exceeds the quota, the broker responds with the throttle time X asking the client to refrain from sending further requests for time X
+* Two types of client quotas can be enforced by Kafka brokers for each group of clients sharing a quota:
+  * Network bandwidth quotas define byte-rate thresholds (since 0.9)
+  * Request rate quotas define CPU utilization thresholds as a percentage of network and I/O threads (since 0.11)
+* Quotas can be applied to (user, client-id), user or client-id groups
+* For a given connection, the most specific quota matching the connection is applied
+* Quota overrides are written to ZooKeeper
+* By default, each unique client group receives a fixed quota as configured by the cluster. This quota is defined on a per-broker basis
+
 ### Broker Config
 
+* `auto.create.topics.enable` - Default value is true. It should be set to false in production as there is no way to validate the topic names.
 * **Message Size**
   * `message.max.bytes` defaults to 1MB
   * `message.max.bytes` indicates the compressed message size
@@ -299,12 +337,21 @@ bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
 
 ## Kafka Consumers
 
+* Transparently handles the failure of Kafka brokers
+* Transparently adapts as topic partitions it fetches migrate within the cluster
+* Consumer is NOT thread-safe
 * If all the consumer instances have the same consumer group, then the records will effectively be load balanced over the consumer instances
 * If all the consumer instances have different consumer groups, then each record will be broadcast to all the consumer processes
 * Each consumer instance in a consumer group is the exclusive consumer of a "fair share" of partitions at any point in time
 * `session.timeout.ms` defines how long the coordinator waits after the member’s last heartbeat before it assuming the member failed
   * With a low value, a network jitter or a long garbage collection (GC) might fail the liveness check, causing the group coordinator to remove this member and begin rebalancing
   * With a longer value, there will be a longer partial unavailability when a consumer actually fails
+* A consumer can look up its coordinator by issuing a `FindCoordinatorRequest` to any Kafka broker and reading the `FindCoordinatorResponse` which will contain the coordinator details
+* The consumer can then proceed to commit or fetch offsets from the coordinator broker
+* The broker sends a successful offset commit response to the consumer only after all the replicas of the offsets topic receive the offsets
+* In case the offsets fail to replicate within a configurable timeout, the offset commit will fail and the consumer may retry the commit after backing off
+* The brokers periodically compact the offsets topic since it only needs to maintain the most recent offset commit per partition
+* The coordinator also caches the offsets in an in-memory table in order to serve offset fetches quickly
 
 ## Kafka Streams
 
@@ -319,16 +366,23 @@ bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
 
 ## Kafka Connect
 
-* Transparently handles the failure of Kafka brokers
-* Transparently adapts as topic partitions it fetches migrate within the cluster
-* Consumer is not thread-safe
+* Kafka Connect is a tool for scalably and reliably streaming data between Apache Kafka and other systems
+* Connectors can be configured with transformations to make lightweight message-at-a-time modifications
+* To copy data between Kafka and another system, users create a Connector for the system they want to pull data from or push data to
+* Connectors come in two flavors: `SourceConnectors` import data from another system (e.g. `JDBCSourceConnector` would import a relational database into Kafka)     and `SinkConnectors` export data (e.g. `HDFSSinkConnector` would export the contents of a Kafka topic to an HDFS file)
+* Connectors do not perform any data copying themselves: their configuration describes the data to be copied, and the Connector is responsible for breaking       that job into a set of Tasks that can be distributed to workers
+* Tasks also come in two corresponding flavors: `SourceTask` and `SinkTask`
+* With an assignment in hand, each Task must copy its subset of the data to or from Kafka
+* The SourceTask implementation included a stream ID (the input filename) and offset (position in the file) with each record. The framework uses this to commit   offsets periodically so that in the case of a failure, the task can recover and minimize the number of events that are reprocessed and possibly duplicated
+
 
 ## Miscellaneous
 
 ### Hardware OS
 
+* Java 8 with G1 Collector
 * On AWS, for lower latency I/O optimized instances will be good
-* Extents File System (XFS) & ZFS perform well for Kafka Workload
+* Extents File System (XFS) perform well for Kafka Workload
 * the mountpoints should have `noatime` option set to eliminate the 
 * export KAFKA_JVM_PERFORMANCE_OPTS="-server -XX:+UseG1GC -XX:MaxGCPauseMillis=20 -XX:InitiatingHeapOccupancyPercent=35 -XX:+DisableExplicitGC-Djava.awt.headless=true"
 * `vm.swappiness = 1` - A low value means the kernel will try to avoid swapping as much as possible making less memory available for page cache
@@ -343,6 +397,8 @@ bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
 * `net.core.rmem_max = 2097152` (2 MiB)
 * `net.ipv4.tcp_wmem = 4096 65536 2048000` (4 KiB 64 KiB 2 MiB)
 * `net.ipv4.tcp_rmem = 4096 65536 2048000` (4 KiB 64 KiB 2 MiB)
+* `vm.max_map_count` = 65535 - Maximum number of memory map areas a process may have (aka `vm.max_map_count`). By default, on a number of Linux systems, the value of `vm.max_map_count` is somewhere around 65535. Each log segment, allocated per partition, requires a pair of index/timeindex files, and each of these files consumes 1 map area. In other words, each log segment uses 2 map areas. Thus, each partition requires minimum 2 map areas, as long as it hosts a single log segment. That is to say, creating 50000 partitions on a broker will result allocation of 100000 map areas and likely cause broker crash with OutOfMemoryError (Map failed) on a system with default `vm.max_map_count`
+* File descriptor limits: Kafka uses file descriptors for log segments and open connections. If a broker hosts many partitions, consider that the broker needs at least (number_of_partitions)*(partition_size/segment_size) to track all log segments in addition to the number of connections the broker makes. We recommend at least 100000 allowed file descriptors for the broker processes as a starting point
 
 ### ZooKeeper Basics
 
