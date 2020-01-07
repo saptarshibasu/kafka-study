@@ -30,6 +30,10 @@
 
 - [Kafka Connect](#kafka-connect)
 
+- [Schema Registry](#schema-registry)
+
+- [KSQL](#ksql)
+
 - [Miscellaneous](#kafka-miscellaneous)
 
   - [Hardware & OS](#hardware-os)
@@ -388,6 +392,19 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 * ConsumerConfig.AUTO_OFFSET_RESET_CONFIG (auto.offset.reset) - 
   * It's applicable when the consumer group doesn't have any offset associated in Kafka
   * The possible values are - earliest (read the messages from the begining), latest (read the new messages)
+* Some stream processing applications don’t require state – they are stateless – which means the processing of a message is independent from the processing of    other messages. Examples are when you only need to transform one message at a time, or filter out messages based on some condition
+* In practice, however, most applications require state – they are stateful – in order to work correctly, and this state must be managed in a fault-tolerant      manner. Your application is stateful whenever, for example, it needs to join, aggregate, or window its input data
+* Kafka Streams uses RocksDB (other DBs are also pluggable) to store local states
+* States in application as well as remote states in other instances of the application can be queried from within the application. However, the data will be      read-only
+* For fault-tolerance of state-store, an internal compacted changelog topic is used
+* The state store sends changes to the changelog topic in a batch, either when a default batch size has been reached or when the commit interval is reached
+* If a task crashes and get restarted on different machine, this internal changelog topic is used to recover the state store. Currently, the default              replication factor of internal topics is 1
+* There are two main differences between non-windowed and windowed aggregation with regard to key-design
+  * For window aggregation the key is <K,W>, i.e., for each window a new key is used
+  * Instead of using a single instance, Streams uses multiple instances (called “segments”) for different time periods
+* After the window retention time has passed old segments can be dropped. Thus, RocksDB memory requirement does not grow infinitely
+* In contrast to KTable a GlobalKTable's state holds a full copy of the underlying topic, thus all keys can be queried locally
+
 
 ## Kafka Connect
 
@@ -399,6 +416,40 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 * Tasks also come in two corresponding flavors: `SourceTask` and `SinkTask`
 * With an assignment in hand, each Task must copy its subset of the data to or from Kafka
 * The SourceTask implementation included a stream ID (the input filename) and offset (position in the file) with each record. The framework uses this to commit   offsets periodically so that in the case of a failure, the task can recover and minimize the number of events that are reprocessed and possibly duplicated
+
+## Schema Registry
+
+* Schema Registry defines a scope in which schemas can evolve, and that scope is the subject. The name of the subject depends on the configured subject name strategy, which by default is set to derive subject name from topic name
+* KafkaAvroSerializer and KafkaAvroDeserializer default to using <topicName>-Key and <topicName>-value as the corresponding subject name while registering or retrieving the schema
+* The default behavior can be modified using the following properties:
+  * key.subject.name.strategy - Determines how to construct the subject name under which the key schema is registered with the Schema Registry
+  * value.subject.name.strategy - Determines how to construct the subject name under which the value schema is registered with Schema Registry
+* Integration with Schema Registry means that Kafka messages do not need to be written with the entire Avro schema. Instead, Kafka messages are written with      the schema id. The producers writing the messages and the consumers reading the messages must be using the same Schema Registry to get the same mapping         between a schema and schema id
+* A producer sends the new schema for Payments to Schema Registry. Schema Registry registers this schema Payments to the subject transactions-value, and returns the schema id of 1 to the producer. The producer caches this mapping between the schema and schema id for subsequent message writes, so it only contacts Schema Registry on the first schema write
+* When a consumer reads this data, it sees the Avro schema id of 1 and sends a schema request to Schema Registry. Schema Registry retrieves the schema associated to schema id 1, and returns the schema to the consumer. The consumer caches this mapping between the schema and schema id for subsequent message reads, so it only contacts Schema Registry the on first schema id read
+* Best practice is to register schemas outside of the client application to control when schemas are registered with Schema Registry and how they evolve.
+* Disable automatic schema registration by setting the configuration parameter auto.register.schemas=false, as shown in the example below
+
+  ```
+  props.put(AbstractKafkaAvroSerDeConfig.AUTO_REGISTER_SCHEMAS, false);
+
+  ```
+
+## KSQL
+
+* The DDL statements (Imperative verbs that define metadata on the KSQL server by adding, changing, or deleting streams and tables) include:
+  * CREATE STREAM
+  * CREATE TABLE
+  * DROP STREAM
+  * DROP TABLE
+  * CREATE STREAM AS SELECT (CSAS)
+  * CREATE TABLE AS SELECT (CTAS)
+* The DML statements (Declarative verbs that read and modify data in KSQL streams and tables. Data Manipulation Language statements modify data only and don’t    change metadata) include:
+  * SELECT
+  * INSERT INTO
+  * CREATE STREAM AS SELECT (CSAS)
+  * CREATE TABLE AS SELECT (CTAS)
+* The CSAS and CTAS statements occupy both categories, because they perform both a metadata change, like adding a stream, and they manipulate data, by creating   a derivative of existing records
 
 
 ## Miscellaneous
@@ -435,6 +486,25 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 
 ### Avro Basics
 
+* BACKWARD: consumer using schema X can process data produced with schema X or X-1
+* BACKWARD_TRANSITIVE: consumer using schema X can process data produced with schema X, X-1, or X-2
+* FORWARD: data produced using schema X can be ready by consumers with schema X or X-1
+* FORWARD_TRANSITIVE: data produced using schema X can be ready by consumers with schema X, X-1, or X-2
+* FULL: backward and forward compatible between schemas X and X-1
+* FULL_TRANSITIVE: backward and forward compatible between schemas X, X-1, and X-2
+* Allowed operations for FULL & FULL_TRANSITIVE
+  * Add optional fields
+  * Delete optional fields
+* Allowed operations for BACKWARD & BACKWARD_TRANSITIVE
+  * Add optional fields
+  * Delete fields
+* Allowed operations for FORWARD & FORWARD_TRANSITIVE
+  * Add fields
+  * Delete optional fields
+* Order of upgrading clients
+  * BACKWARD or BACKWARD_TRANSITIVE: there is no assurance that consumers using older schemas can read data produced using the new schema. Therefore, upgrade all consumers before you start producing new events.
+  * FORWARD or FORWARD_TRANSITIVE: there is no assurance that consumers using the new schema can read data produced using older schemas. Therefore, first upgrade all producers to using the new schema and make sure the data already produced using the older schemas are not available to consumers, then upgrade the consumers.
+  * FULL or FULL_TRANSITIVE: there are assurances that consumers using older schemas can read data produced using the new schema and that consumers using the new schema can read data produced using older schemas. Therefore, you can upgrade the producers and consumers independently.
 
 
 ## References
