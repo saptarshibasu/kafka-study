@@ -2,8 +2,6 @@
 
 **Kafka Latest Version - 2.4.0**
 
-- [Commands](#commands)
-
 - [Kafka Basics](#kafka-basics)
 
   - [Introduction](#introduction)
@@ -34,6 +32,8 @@
 
 - [KSQL](#ksql)
 
+- [Kafka CLI](#kafka-cli)
+
 - [Miscellaneous](#kafka-miscellaneous)
 
   - [Hardware & OS](#hardware-os)
@@ -44,37 +44,6 @@
 
 - [References](#references)
 
-
-## Commands
-
-```
-bin\windows\zookeeper-server-start.bat config\zookeeper.properties
-```
-```
-bin\windows\kafka-server-start.bat config\server.properties
-```
-```
-bin\windows\kafka-topics.bat --create --zookeeper localhost:2181 --replication-factor 1 --partitions 2 --topic word-count-input
-```
-```
-bin\windows\kafka-console-producer.bat --broker-list localhost:9092 --topic word-count-input
-```
-```
-bin\windows\kafka-console-consumer.bat --bootstrap-server localhost:9092 ^
-    --topic word-count-output ^
-    --from-beginning ^
-    --formatter kafka.tools.DefaultMessageFormatter ^
-    --property print.key=true ^
-    --property print.value=true ^
-    --property key.deserializer=org.apache.kafka.common.serialization.StringDeserializer ^
-    --property value.deserializer=org.apache.kafka.common.serialization.LongDeserializer
-```
-```
-bin\windows\kafka-topics.bat --delete --zookeeper localhost:2181 --topic word-count-input
-```
-```
-bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
-```
 
 ## Kafka Basics
 
@@ -136,6 +105,14 @@ bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
 * Compression of message batch saves network bandwidth
 * No intervening routing tier. Messages of a given partition are sent directly to the partition leader
 * Consumers use "long poll" to avoid busy waiting and ensure larger transfer sizes
+* Default ports
+  * Zookeeper: 2181
+  * Zookeeper Leader Port 3888
+  * Zookeeper Election Port (Peer port) 2888
+  * Broker: 9092
+  * REST Proxy: 8082
+  * Schema Registry: 8081
+  * KSQL: 8088
 
 Note: Application level flushing (fsync) gives less leeway to the OS to optimize the writes. The Linux fsync implementation blocks all writes to the file, whereas the OS level flushing makes more granular level locks
 
@@ -452,6 +429,38 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 * The CSAS and CTAS statements occupy both categories, because they perform both a metadata change, like adding a stream, and they manipulate data, by creating   a derivative of existing records
 
 
+## Kafka CLI
+
+```
+bin\windows\zookeeper-server-start.bat config\zookeeper.properties
+```
+```
+bin\windows\kafka-server-start.bat config\server.properties
+```
+```
+bin\windows\kafka-topics.bat --create --zookeeper localhost:2181 --replication-factor 1 --partitions 2 --topic word-count-input
+```
+```
+bin\windows\kafka-console-producer.bat --broker-list localhost:9092 --topic word-count-input
+```
+```
+bin\windows\kafka-console-consumer.bat --bootstrap-server localhost:9092 ^
+    --topic word-count-output ^
+    --from-beginning ^
+    --formatter kafka.tools.DefaultMessageFormatter ^
+    --property print.key=true ^
+    --property print.value=true ^
+    --property key.deserializer=org.apache.kafka.common.serialization.StringDeserializer ^
+    --property value.deserializer=org.apache.kafka.common.serialization.LongDeserializer
+```
+```
+bin\windows\kafka-topics.bat --delete --zookeeper localhost:2181 --topic word-count-input
+```
+```
+bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
+```
+
+
 ## Miscellaneous
 
 ### Hardware OS
@@ -483,6 +492,16 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 * A three-node ensemble can run with one node missing
 * A five-node ensemble can run with two nodes missing
 * It's a good idea to run Zookeeper in a five-node ensemble so that the ensemble can run even when one node goes down while another node is taken down due to configuration change etc.
+* ZooKeeper parameters
+  * `initLimit` - the amount of time to allow the followers to connect with a leader
+  * `syncLimit` - Limits how out-of-sync followers can be with the leader
+  * `tickTime` - Both values are a number of tickTime units
+* In the following example, the `initLimit` is 20 * 2000 ms or 40 seconds
+  ```
+  tickTime=2000
+  initLimit=20
+  syncLimit=5
+  ```
 
 ### Avro Basics
 
