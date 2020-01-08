@@ -356,8 +356,6 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
   * Setting `enable.auto.commit` means that offsets are committed automatically with a frequency controlled by the config `auto.commit.interval.ms` giving us     "at most once" i.e. commiting before the message processing is complete
   * Users can also control when records should be considered as consumed and hence commit their offsets. We will manually commit the offsets only after the       corresponding records have been inserted into the database. This gives us "at least once" delivery semantic where the message will be delivered once, but     in failure cases, it could be possibly delivered twice
   * The consumer application need not use Kafka's built-in offset storage, it can store offsets in a store of its own choosing. The primary use case for this     is allowing the application to store both the offset and the results of the consumption in the same system in a way that both the results and offsets are     stored atomically. This will give us "exactly-once" semantics
-  * **Key Methods of Consumer API**
-    * 
 
 ## Kafka Streams
 
@@ -381,14 +379,31 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
   * Instead of using a single instance, Streams uses multiple instances (called “segments”) for different time periods
 * After the window retention time has passed old segments can be dropped. Thus, RocksDB memory requirement does not grow infinitely
 * In contrast to KTable a GlobalKTable's state holds a full copy of the underlying topic, thus all keys can be queried locally
-
+* Stateless transformations – Branch, Filter, Inverse Filter, FlatMap, ForEach, GroupByKey, GroupBy, Map, Peek, Print, SelectKey, Table To Stream
+* Join operands - KStream-to-Kstream, KTable-to-KTable, Kstream-to-Ktable, KStream-to-GlobalKTable
+* KStream-KStream join is always windowed join
+* Outer join is supported only for KStream-to-KStream & KTable-to-KTable
+* No join is supported for KTable-to-GlobalKTable
+* Windowed joins are not supported for KStream-to-KTable, KTable-to-KTable, Kstream-to-GlobalKTable
+* Input data must be co-partitioned when joining. This ensures that input records with the same key, from both sides of the join, are delivered to the same stream task during processing. It is the responsibility of the user to ensure data co-partitioning when joining
+* The requirements for data co-partitioning are:
+  * The input topics of the join (left side and right side) must have the same number of partitions.
+  * All applications that write to the input topics must have the same partitioning strategy so that records with the same key are delivered to same partition number
+* GlobalKTables do not require co-partitioning
+* Kafka streams cannot verify the co-partitioning requirement for partition strategy
+* Kafka streams throws `TopologyBuilderException` if the number of partitions on both sides of the join are not same
+* Stream joining windows
+  * Tumbling time window - Fixed-size, non-overlapping, gap-less windows
+  * Hopping time window - Hopping time windows are windows based on time intervals. They model fixed-sized, (possibly) overlapping windows. A hopping window is defined by two properties: the window’s size and its advance interval (aka “hop”). The advance interval specifies by how much a window moves forward relative to the previous one
+  * Sliding time window - A sliding window models a fixed-size window that slides continuously over the time axis; here, two data records are said to be included in the same window if (in the case of symmetric windows) the difference of their timestamps is within the window size. Thus, sliding windows are not aligned to the epoch, but to the data record timestamps
+  * Session window
 
 ## Kafka Connect
 
 * Kafka Connect is a tool for scalably and reliably streaming data between Apache Kafka and other systems
 * Connectors can be configured with transformations to make lightweight message-at-a-time modifications
 * To copy data between Kafka and another system, users create a Connector for the system they want to pull data from or push data to
-* Connectors come in two flavors: `SourceConnectors` import data from another system (e.g. `JDBCSourceConnector` would import a relational database into Kafka)     and `SinkConnectors` export data (e.g. `HDFSSinkConnector` would export the contents of a Kafka topic to an HDFS file)
+* Connectors come in two flavors: `SourceConnectors` import data from another system (e.g. `JDBCSourceConnector` would import a relational database into Kafka)   and `SinkConnectors` export data (e.g. `HDFSSinkConnector` would export the contents of a Kafka topic to an HDFS file)
 * Connectors do not perform any data copying themselves: their configuration describes the data to be copied, and the Connector is responsible for breaking       that job into a set of Tasks that can be distributed to workers
 * Tasks also come in two corresponding flavors: `SourceTask` and `SinkTask`
 * With an assignment in hand, each Task must copy its subset of the data to or from Kafka
@@ -406,7 +421,6 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 * When a consumer reads this data, it sees the Avro schema id of 1 and sends a schema request to Schema Registry. Schema Registry retrieves the schema associated to schema id 1, and returns the schema to the consumer. The consumer caches this mapping between the schema and schema id for subsequent message reads, so it only contacts Schema Registry the on first schema id read
 * Best practice is to register schemas outside of the client application to control when schemas are registered with Schema Registry and how they evolve.
 * Disable automatic schema registration by setting the configuration parameter auto.register.schemas=false, as shown in the example below
-
   ```
   props.put(AbstractKafkaAvroSerDeConfig.AUTO_REGISTER_SCHEMAS, false);
 
@@ -524,6 +538,14 @@ bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
   * BACKWARD or BACKWARD_TRANSITIVE: there is no assurance that consumers using older schemas can read data produced using the new schema. Therefore, upgrade all consumers before you start producing new events.
   * FORWARD or FORWARD_TRANSITIVE: there is no assurance that consumers using the new schema can read data produced using older schemas. Therefore, first upgrade all producers to using the new schema and make sure the data already produced using the older schemas are not available to consumers, then upgrade the consumers.
   * FULL or FULL_TRANSITIVE: there are assurances that consumers using older schemas can read data produced using the new schema and that consumers using the new schema can read data produced using older schemas. Therefore, you can upgrade the producers and consumers independently.
+* Primitive data types –
+  * null, boolean, int, long, float, double, bytes, string
+* Complex data types –
+  * record, enum, array, map, union, fixed
+* Record attributes –
+  * name, namespace, doc, aliases, type, fields
+* Enum attributes
+  * name, namespace, aliases, doc, symbols
 
 
 ## References
