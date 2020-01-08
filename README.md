@@ -12,6 +12,8 @@
 
   - [Retention](#retention)
 
+  - [Compaction](#compaction)
+
   - [Rebalancing](#rebalancing)
 
   - [Delivery Symantics](#delivery-symantics)
@@ -185,23 +187,37 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 
 * **Segments**
   * Each partition is split into multiple segments
-  * By default, each segment contains 1 GB of data or 1 week worth of data whichever is smaller
-  * If the segment limit is reached, the segment file is closed and a new segment file is created
+  * By default, each segment contains 1 GB of data (`log.segment.bytes`) or 1 week worth of data (`log.roll.ms` or `log.roll.hours`) whichever is smaller
+  * If either of the segment limits is reached, the segment file is closed and a new segment file is created
   * Kafka brokers always keeps an open file handle to the active segment of each partition
-  * The segment being currently writtent to for a given partition is called active segment
-  * Active segments are never deleted
-  * If the retention policy is set as "delete", the old segments are deleted depending
-  * If both `log.segment.ms` & `log.segment.bytes` are set, a new segment will be created when either of these two criteria is met
-  * Smaller log segments meaans frequest closing and allocation of files reducing overall disk performance
+  * The segment being currently written to for a given partition is called active segment
+  * Active segments are never deleted even if the retention criteria is met
+  * If the retention policy is set as "delete", the old segments are deleted depending on retention criteria
+  * Smaller log segments mean frequent closing and allocation of files reducing overall disk performance
 * **Deciding Number of Partitions**
   * Avoid underestimating as one partition will always be read by only one consumer
   * Avoid overestimating as each partition uses memory and other resources on a broker and increases the leader election time
 * **Log Retention**
-  * Default log retention time is 7 days (`log.retention.ms`)
   * Retention by time is done based on the last modification time of the segment file (which is usually the last time a message is added to the segment unless some admistrative activities moved the partitions across brokers resulting is excess retention)
   * Default log retention size is 1 GB (`log.retention.bytes`). This configuration is applicable per partition and NOT per topic
   * `log.retention.ms`, `log.retention.minutes` & `log.retention.hours` - If more than one of these parameters are set, the smallest unit takes precedence
-  * If both log retention by size and time are configured, messages will be removed when either criteria is met
+  * `log.retention.check.interval.ms` = The frequency at which the log cleaner checks if there is any log for deletion 
+
+### Compaction
+
+* `log.cleanup.policy = compact`
+* Kafka will always retain at least the last known value for each message key within the log of data for a single topic partition
+* It serves use cases to restore a system or pre-warm a cache after a crash. Essentially it serves the use cases that needs the latest values for ther complete   set of keys rather than the most recent changes
+* Compaction is useful to implement event sourcing or materialized view pattern
+* The original offset of the messages are not changed
+* Compaction also allows for deletes. A message with a key and a null payload will be treated as a delete from the log
+* Delete markers will themselves be cleaned out of the log after a period of time (`delete retention point`) to free up space
+* It is possible for a consumer to miss delete markers if it lags by more than `delete.retention.ms` (default 24 hrs)
+* The compaction is done in the background by periodically recopying log segments
+* Cleaning does not block reads and can be throttled to use no more than a configurable amount of I/O throughput to avoid impacting producers and consumers
+* The topic's `min.compaction.lag.ms` can be used to guarantee the minimum length of time must pass after a message is written before it could be compacted
+* Compaction will never re-order messages, just remove some
+* Cleaning is done by a separate pool of threads `log.cleaner.threads` at an interval 
 
 ### Rebalancing
 
