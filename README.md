@@ -227,6 +227,14 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
   * At most once — Messages may be lost but are never redelivered.
   * At least once — Messages are never lost but may be redelivered.
   * Exactly once — this is what people actually want, each message is delivered once and only once.
+* At most once (producer perspective) - No retry if successful response from broker is not received (`retries = 0`)
+* At least once (producer perspective) - If no success response received from broker, retry again (`retries = Integer.MAX_VALUE`, `delivery.timeout.ms = 120000`)
+* Exacly once (producer perspective) - 
+  * `retries = Integer.MAX_VALUE`, `delivery.timeout.ms = 120000`, `enable.idempotence = true`
+  * Broker assigns each producer a unique id (PID) and keep a sequence number that increments with each message sent
+  * Leveraging the in-order property of Kafka (and TCP), the broker can only keep track of the highest sequence number seen and reject any sequence number lower than that
+  * 
+
 * **Idempotence** - `enable.idempotence`
   * Each producer will be assigned a PID by the broker
 
@@ -347,15 +355,15 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
   * `auto.offset.reset` - What to do when there is no initial offset in Kafka or if the current offset does not exist any more on the server (e.g. because that   data has been deleted). Default value is `latest`
   * `max.poll.interval.ms` - The maximum delay between invocations of `poll()` when using consumer group management. This places an upper bound on the amount     of time that the consumer can be idle before fetching more records. If `poll()` is not called before expiration of this timeout, then the consumer is         considered failed and the group will rebalance in order to reassign the partitions to another member. For consumers using a non-null `group.instance.id`      which reach this timeout, partitions will not be immediately reassigned. Instead, the consumer will stop sending heartbeats and partitions will be            reassigned after expiration of session.timeout.ms
   * `enable.auto.commit` - If true the consumer's offset will be periodically committed in the background. Default value is true and must be set to false in      production 
-  * **Handling polls for unpredictable message processing time**
-    * Move message processing to another thread
-    * Allow the consumer to continue calling poll while the processor is still working
-    * Some care must be taken to ensure that committed offsets do not get ahead of the actual position
-    * Typically, you must disable automatic commits and manually commit processed offsets for records only after the thread has finished handling them 
-    * Note also that you will need to pause the partition so that no new records are received from poll until after thread has finished handling those            previously returned
-  * Setting `enable.auto.commit` means that offsets are committed automatically with a frequency controlled by the config `auto.commit.interval.ms` giving us     "at most once" i.e. commiting before the message processing is complete
-  * Users can also control when records should be considered as consumed and hence commit their offsets. We will manually commit the offsets only after the       corresponding records have been inserted into the database. This gives us "at least once" delivery semantic where the message will be delivered once, but     in failure cases, it could be possibly delivered twice
-  * The consumer application need not use Kafka's built-in offset storage, it can store offsets in a store of its own choosing. The primary use case for this     is allowing the application to store both the offset and the results of the consumption in the same system in a way that both the results and offsets are     stored atomically. This will give us "exactly-once" semantics
+* **Handling polls for unpredictable message processing time**
+  * Move message processing to another thread
+  * Allow the consumer to continue calling poll while the processor is still working
+  * Some care must be taken to ensure that committed offsets do not get ahead of the actual position
+  * Typically, you must disable automatic commits and manually commit processed offsets for records only after the thread has finished handling them 
+  * Note also that you will need to pause the partition so that no new records are received from poll until after thread has finished handling those            previously returned
+* Setting `enable.auto.commit` means that offsets are committed automatically with a frequency controlled by the config `auto.commit.interval.ms` giving us     "at most once" i.e. commiting before the message processing is complete
+* Users can also control when records should be considered as consumed and hence commit their offsets. We will manually commit the offsets only after the       corresponding records have been inserted into the database. This gives us "at least once" delivery semantic where the message will be delivered once, but     in failure cases, it could be possibly delivered twice
+* The consumer application need not use Kafka's built-in offset storage, it can store offsets in a store of its own choosing. The primary use case for this     is allowing the application to store both the offset and the results of the consumption in the same system in a way that both the results and offsets are     stored atomically. This will give us "exactly-once" semantics
 
 ## Kafka Streams
 
