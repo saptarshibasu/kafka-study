@@ -108,10 +108,7 @@
 * **Shutdown** - When a server is stopped gracefully it has two optimizations it will take advantage of:
   * It will sync all its logs to disk to avoid needing to do any log recovery when it restarts (i.e. validating the checksum for all messages in the tail of the log). Log recovery takes time so this speeds up intentional restarts
   * It will migrate any partitions the server is the leader for to other replicas prior to shutting down. This will make the leadership transfer faster and minimize the time each partition is unavailable to a few milliseconds.
-* Syncing the logs will happen automatically whenever the server is stopped other than by a hard kill, but the controlled leadership migration requires using a   special setting:
-  ```
-  controlled.shutdown.enable=true
-  ```
+* Syncing the logs will happen automatically whenever the server is stopped other than by a hard kill, but the controlled leadership migration requires using a   special setting: `controlled.shutdown.enable=true`
 * Note that controlled shutdown will only succeed if all the partitions hosted on the broker have replicas (i.e. the replication factor is greater than 1 and     at least one of these replicas is alive)
 * Default ports
   * Zookeeper: 2181
@@ -226,7 +223,7 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 * Compaction is useful to implement event sourcing or materialized view pattern
 * The original offset of the messages are not changed
 * Compaction also allows for deletes. A message with a key and a null payload will be treated as a delete from the log
-* Delete markers will themselves be cleaned out of the log after a period of time (`delete retention point`) to free up space
+* Delete markers will themselves be cleaned out of the log after a period of time to free up space
 * It is possible for a consumer to miss delete markers if it lags by more than `delete.retention.ms` (default 24 hrs)
 * The compaction is done in the background by periodically recopying log segments
 * Cleaning does not block reads and can be throttled to use no more than a configurable amount of I/O throughput to avoid impacting producers and consumers
@@ -257,27 +254,39 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
     * All the followers are required to send a sync group request to get their actual assignments
     * Co-ordinator responds back with the assignment information
   * Stable
-* Static membership with `group.instance.id` so that the same set of partitions are assigned back to the member after restart without a fresh rebalancing
+* Static membership with `group.instance.id` so that the same set of partitions are assigned back to the member after temporary network partitioning (within `session.timeout`) without a fresh rebalancing
 
 
 ### Delivery Symantics
 
+* Exactly once semantic was introduced in version 0.11 with support from the following features
+  * idempotence - `enable.idempotence` (broker config)
+  * transaction - `transactional.id` (producer config)
 * Kafka supports
   * At most once — Messages may be lost but are never redelivered.
   * At least once — Messages are never lost but may be redelivered.
   * Exactly once — this is what people actually want, each message is delivered once and only once.
-* At most once (producer perspective) - No retry if successful response from broker is not received (`retries = 0`)
-* At least once (producer perspective) - If no success response received from broker, retry again (`retries = Integer.MAX_VALUE`, `delivery.timeout.ms = 120000`)
-* Exacly once (producer perspective) - 
-  * `retries = Integer.MAX_VALUE`, `delivery.timeout.ms = 120000`, `enable.idempotence = true`
-  * Broker assigns each new producer a unique id (PID) and keep a sequence number per partition that increments with each message sent
-  * Relying on the in-order property of Kafka (and TCP), the broker will only keep track of the highest sequence number seen and reject any sequence number which is not exacly 1 higher than the last seen number
-  * Messages with a lower sequence number result in a duplicate error, which can be ignored by the producer
-  * Messages with a higher number result in an out-of-sequence error, which indicates that some messages have been lost, and is fatal
-  * The PID, producer epoch and the first sequence number within the set will be stored at the message set level to reduce the overhead at message level
-  * Since each new instance of a producer is assigned a new, unique, PID, we can only guarantee idempotent production within a single producer session
-* **Idempotence** - `enable.idempotence`
-  * Each producer will be assigned a PID by the broker
+* Producer Perspective
+  * At most once - No retry if successful response from broker is not received (`retries = 0`)
+  * At least once - If no success response received from broker, retry again (`retries = Integer.MAX_VALUE`, `delivery.timeout.ms = 120000`)
+  * Exactly once - 
+    * `retries = Integer.MAX_VALUE`, `delivery.timeout.ms = 120000`, `enable.idempotence = true`
+    * Broker assigns each new producer a unique id (PID) and keeps a sequence number per partition that starts from 0 and increments with each message sent
+    * Relying on the in-order property of Kafka (and TCP), the broker will only keep track of the highest sequence number seen and reject any sequence number which is not exacly 1 higher than the last seen number
+    * Messages with a lower sequence number result in a duplicate error, which can be ignored by the producer
+    * Messages with a higher number result in an out-of-sequence error, which indicates that some messages have been lost, and is fatal
+    * The PID, producer epoch and the first sequence number within the set will be stored at the message set level to reduce the overhead at message level
+    * Since each new instance of a producer is assigned a new unique PID, we can only guarantee idempotent production within a single producer session
+    * Producers lease PIDs for a fixed duration of time from the co-ordinator broker to ensure that the brokers don't go out-of-memory to keep track of all PIDs
+* Consumer Perspective
+  * At most once - `enable.auto.commit` commits the offset even before the messages were processed
+  * At least once - The writes to the down stream system when retried without the offsets
+  * Exactly once - The offsets can be saved in the downstream system along with the messages. In a key value DB, the message will be simply overwritten and in a relational DB, both can be saved in a transaction
+* Transactions across partitions are useful for streaming - consume-process-produce - as consume is also about producing offset messages to keep track of progress, consuming and producing in streaming need to be done in a transaction
+* `transactional.id` is a user provided unique id per producer. It serves two purposes
+  * Allows only one transaction to proceed for a given producer
+  * Allows recovering a transaction after restart
+* Transaction expiry is configured using - `transactional.id.expiration.ms`
 
 ### Quota
 
