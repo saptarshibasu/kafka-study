@@ -4,7 +4,9 @@
 
 - [Kafka Basics](#kafka-basics)
 
-  - [Introduction](#introduction)
+  - [What Why of Kafka](#what-why-of-kafka)
+
+  - [Basics](#basics)
 
   - [Performance](#performance)
 
@@ -49,18 +51,29 @@
 
 ## Kafka Basics
 
-### Introduction
+### What Why of Kafka
 
-* Kafka originally designed as a message queue has developed into a distributed streaming platform. It is based on a **distributed, partitioned, replicated**     commit log
-* Why Kafka
+* Kafka originally designed as a message queue has developed into a distributed streaming platform. It is based on a **distributed, partitioned, replicated**     log
+* As a messaging system, what makes Kafka different from the traditional messaging systems is its log centric design which makes it suitable for use cases that    cannot be so easily and elegantly addressed with other messaging systems
+  * **Developing applications optimized for both read and write** - Kafka allows capturing application data as an ordered series of events which can then be processed by different consumer processes to produce various read optimized views. Thus, while writes are efficient appends, reads are from read-optimized pre-aggregated denormalized views updated in near-real time. This pattern of developing applications where the read and write models are decoupled is also known as **Command Query Responsibility Seggregation (CQRS)** and we implement it using another pattern called **Event Sourcing** which requires the data to be captured as an ordered series of immutable events (as opposed to a state machine) to ensure that the historical information is preserved
+  * **Replacing dual-writes with log based writes** - Applications writing to multiple systems (viz. search index, database, cache, hadoop etc.) can suffer from race condition and partial failure leading to perpetually inconsistent data. Applications can instead write to Kafka and then have the individual systems consume the ordered event stream from Kafka to create their internal state in a deteministic way
+  * **Change Data Capture** - Applications writing directly to database can source an event stream from the DB **Write Ahead Log (WAL)** to Kafka via Kafka Connect. The indiviadual applications can then prepare their respective views from the Kafka event stream
+  * **Materialized View Pattern** - In a microservice based architecture, individual microservices can consume events from other services and create it's own pre-aggregated **Materialized View** and serve data from there instead of querying the respective services during run time. This will lead to reduced latency and loose-coupling between services
+  * **Recreating views** - Sourcing the event stream from Kafka the views can be recreated at anytime after a crash (viz. pre-warming a cache after a restart). This aspect can also be exploited to debug applications by replaing the events to recreate the exact scenario
+* Some key aspects of Kafka - 
   * Kafka is a modern day fault-tolerant distributed system which scales horizontally storing more data that a single machine can hold
-  * Kafka's zero copy, page cache leverage, message batching, amaller heap and sequential disk access provide good performance. 
-  * Kafka's provides durable storage making it a single source of truth for multiple downstream systems
+  * Kafka provides ordering guarantees within a partition
+  * Kafka's durability using distributed replicated partitions allows it to serve as a single source of truth
+  * Kafka's compaction cleaning policy allows it to store compacted data for an indefinite period of time
+  * Kafka Connect API makes it easy to import/export data from or to other systems
+  * Kafka Streamimg API allows processing event stream with advanced joining & windowing primitives
   * Kafka's consumer groups allow both queue (load balancing across consumer processes) and publish-subscribe (multiple consumer groups) at the same time
-  * Kafka along with Kafka Connect make it easy to implement event sourcing with CDC. Additionally, it allows message replay
+  * Kafka's zero copy, page cache leverage, message batching, smaller heap and sequential disk access provide good performance
   * Kafka's performance is effectively constant with respect to data size so storing data for a long time is not a problem
-  * Consumers keep track of their progress in separate internal Kafka topics adding very little overhead to the brokers
-  * Kafka provides total ordering for recors in the same partition (with the right set of configuration)
+  * Kafka's consumers keep track of their progress in separate internal Kafka topics adding very little overhead to the brokers
+
+### Basics
+
 * Data is organized among **topics**
 * Multiple producers can write to the same topic or multiple topics
 * Each topic is **partitioned**
