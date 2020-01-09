@@ -70,6 +70,8 @@
   * Allow storing more records a single machine can hold
   * Serve as a unit of parallelism
 * Producers and Consumers are Kafka clients
+* A message in kafka is a key-value pair with a small amount of associated metadata
+* A message set is a group of messages and is the unit of compression
 * Kafka only provides a total order over records within a partition, not between different partitions in a topic
 * As Kafka writes its data to local disk, the data may linger in the filesystem cache and may not make its way to the disk. The disk flush parameter are not      recommended to set for performance reasons. Therefore Kafka relies solely on replication for reliability
 * In Linux, data written to the filesystem is maintained in pagecache until it must be written out to disk (due to an application-level fsync or the OS's         ownflush policy)
@@ -255,10 +257,12 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 * At least once (producer perspective) - If no success response received from broker, retry again (`retries = Integer.MAX_VALUE`, `delivery.timeout.ms = 120000`)
 * Exacly once (producer perspective) - 
   * `retries = Integer.MAX_VALUE`, `delivery.timeout.ms = 120000`, `enable.idempotence = true`
-  * Broker assigns each producer a unique id (PID) and keep a sequence number that increments with each message sent
-  * Leveraging the in-order property of Kafka (and TCP), the broker can only keep track of the highest sequence number seen and reject any sequence number lower than that
-  * 
-
+  * Broker assigns each new producer a unique id (PID) and keep a sequence number per partition that increments with each message sent
+  * Relying on the in-order property of Kafka (and TCP), the broker will only keep track of the highest sequence number seen and reject any sequence number which is not exacly 1 higher than the last seen number
+  * Messages with a lower sequence number result in a duplicate error, which can be ignored by the producer
+  * Messages with a higher number result in an out-of-sequence error, which indicates that some messages have been lost, and is fatal
+  * The PID, producer epoch and the first sequence number within the set will be stored at the message set level to reduce the overhead at message level
+  * Since each new instance of a producer is assigned a new, unique, PID, we can only guarantee idempotent production within a single producer session
 * **Idempotence** - `enable.idempotence`
   * Each producer will be assigned a PID by the broker
 
