@@ -40,7 +40,7 @@
 
 - [Miscellaneous](#kafka-miscellaneous)
 
-  - [Hardware & OS](#hardware-os)
+  - [Production Deployment](#production-deployment)
 
   - [ZooKeeper Basics](#zooKeeper-basics)
 
@@ -508,14 +508,100 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 
 ## Kafka CLI
 
+**Start Zookeeper with default configuration**
+
 ```
 bin\windows\zookeeper-server-start.bat config\zookeeper.properties
 ```
+
+**Start Kafka broker with default configuration**
+
 ```
 bin\windows\kafka-server-start.bat config\server.properties
 ```
+
+**Create a new topic**
+
 ```
-bin\windows\kafka-topics.bat --create --zookeeper localhost:2181 --replication-factor 1 --partitions 2 --topic word-count-input
+bin\windows\kafka-topics.bat ^
+    --create ^
+    --zookeeper localhost:2181 ^
+    --replication-factor 1 ^
+    --partitions 2 ^
+    --topic word-count-input
+```
+
+**Delete a topic**
+
+* If the flag `delete.topic.enable` is not enabled, the following command will be ignored
+* The process is asynchronous and hence the topic won't be deleted immediately
+
+```
+bin\windows\kafka-topics.bat ^
+    --delete ^
+    --zookeeper localhost:2181 ^
+    --topic word-count-input
+```
+
+**Adding partitions**
+
+* Key to partition mapping will change if the number of partitions is changed
+* It is not advisable to add partitions to topics that have keys
+* Deletion of partition is not possible
+
+```
+bin\windows\kafka-topics.bat ^
+    --alter ^
+    --zookeeper localhost:2181 ^
+    --topic word-count-input ^
+    --partitions 16 ^
+```
+
+**List topics**
+
+```
+bin\windows\kafka-topics.bat ^
+    --list ^
+    --zookeeper localhost:2181
+```
+
+**Describe a topic**
+
+The output includes - partition count, topic configuration overrides, linting of each partition and its replica assignments
+
+```
+bin\windows\kafka-topics.bat ^
+    --describe ^
+    --zookeeper localhost:2181 ^
+    --topics-with-overrides ^       REM Display topics having configurtion overrides
+    --under-replicated-partitions ^ REM Display partitions with one or more out-of-sync replicas
+    --unavailable-partitions        REM Display partitions without a leader
+```
+
+**List consumer groups**
+
+```
+bin\windows\kafka-consumer-groups.bat
+    --new-consumer
+    --bootstrap-server localhost:9092
+    --list
+```
+
+**Describe consumer group**
+
+Among other things following fields are displayed
+
+* CURRENT-OFFSET - The next offset to be consumed by the consumer group
+* LOG-END-OFFSET - The current high-water mark offset from the broker for the topic partition. The offset of the next message to be produced to this partition
+* LAG - The difference between the consumer Current-Offset and the broker Log-End-Offset for the topic partition
+
+```
+bin\windows\kafka-consumer-groups.bat
+    --new-consumer
+    --bootstrap-server localhost:9092
+    --describe
+    --group testgroup
+
 ```
 ```
 bin\windows\kafka-console-producer.bat --broker-list localhost:9092 --topic word-count-input
@@ -530,17 +616,10 @@ bin\windows\kafka-console-consumer.bat --bootstrap-server localhost:9092 ^
     --property key.deserializer=org.apache.kafka.common.serialization.StringDeserializer ^
     --property value.deserializer=org.apache.kafka.common.serialization.LongDeserializer
 ```
-```
-bin\windows\kafka-topics.bat --delete --zookeeper localhost:2181 --topic word-count-input
-```
-```
-bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
-```
-
 
 ## Miscellaneous
 
-### Hardware OS
+### Production Deployment
 
 * Java 8 with G1 Collector
 * On AWS, for lower latency I/O optimized instances will be good
@@ -559,8 +638,22 @@ bin\windows\kafka-topics.bat --list --zookeeper localhost:2181
 * `net.core.rmem_max = 2097152` (2 MiB)
 * `net.ipv4.tcp_wmem = 4096 65536 2048000` (4 KiB 64 KiB 2 MiB)
 * `net.ipv4.tcp_rmem = 4096 65536 2048000` (4 KiB 64 KiB 2 MiB)
-* `vm.max_map_count` = 65535 - Maximum number of memory map areas a process may have (aka `vm.max_map_count`). By default, on a number of Linux systems, the value of `vm.max_map_count` is somewhere around 65535. Each log segment, allocated per partition, requires a pair of index/timeindex files, and each of these files consumes 1 map area. In other words, each log segment uses 2 map areas. Thus, each partition requires minimum 2 map areas, as long as it hosts a single log segment. That is to say, creating 50000 partitions on a broker will result allocation of 100000 map areas and likely cause broker crash with OutOfMemoryError (Map failed) on a system with default `vm.max_map_count`
-* File descriptor limits: Kafka uses file descriptors for log segments and open connections. If a broker hosts many partitions, consider that the broker needs at least (number_of_partitions)*(partition_size/segment_size) to track all log segments in addition to the number of connections the broker makes. We recommend at least 100000 allowed file descriptors for the broker processes as a starting point
+* `vm.max_map_count` = 65535 - Maximum number of memory map areas a process may have (aka `vm.max_map_count`). By default, on a number of Linux systems, the      value of `vm.max_map_count` is somewhere around 65535. Each log segment, allocated per partition, requires a pair of index/timeindex files, and each of these   files consumes 1 map area. In other words, each log segment uses 2 map areas. Thus, each partition requires minimum 2 map areas, as long as it hosts a single   log segment. That is to say, creating 50000 partitions on a broker will result allocation of 100000 map areas and likely cause broker crash with                OutOfMemoryError (Map failed) on a system with default `vm.max_map_count`
+* File descriptor limits: Kafka uses file descriptors for log segments and open connections. If a broker hosts many partitions, consider that the broker needs    at least (number_of_partitions)*(partition_size/segment_size) to track all log segments in addition to the number of connections the broker makes. We           recommend at least 100,000 allowed file descriptors for the broker processes as a starting point
+* Kafka uses heap space very carefully and does not require setting heap sizes more than 6 GB
+* You can do a back-of-the-envelope estimate of memory needs by assuming you want to be able to buffer for 30 seconds and compute your memory need as             `write_throughput * 30`
+* A machine with 64 GB of RAM is a decent choice, but 32 GB machines are not uncommon. Less than 32 GB tends to be counterproductive
+* Do not share the same drives used for Kafka data with application logs or other OS filesystem activity to ensure good latency
+* You should use RAID 10 if the additional cost is acceptable. Otherwise, configure your Kafka server with multiple log directories, each directory mounted on    a separate drive
+* You should avoid network-attached storage (NAS). NAS is often slower, displays larger latencies with a wider deviation in average latency, and is a single      point of failure
+* Modern data-center networking (1 GbE, 10 GbE) is sufficient for the vast majority of clusters.
+* You should avoid clusters that span multiple data centers, even if the data centers are colocated in close proximity; and avoid clusters that span large        geographic distances
+* `num.partitions` - The default number of log partitions for auto-created topics. You should increase this since it is better to over-partition a topic.         Over-partitioning a topic leads to better data balancing and aids consumer parallelism. For keyed data, you should avoid changing the number of partitions in   a topic
+* Key Service Goals
+  * Throughput
+  * Latency
+  * Durability
+  * Availability
 
 ### ZooKeeper Basics
 
