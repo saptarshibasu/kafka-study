@@ -287,6 +287,10 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
   * Allows only one transaction to proceed for a given producer
   * Allows recovering a transaction after restart
 * Transaction expiry is configured using - `transactional.id.expiration.ms`
+* Kafka default `isolation.level` is `read_uncommitted`
+* `read_uncommitted` - consume both committed and uncommitted messages in offset ordering.
+* `read_committed` - Only consume non-transactional messages or committed transactional messages in offset order. The end offset of a partition for a             read_committed consumer would be the offset of the first message in the partition belonging to an open transaction. This offset is known as the 'Last Stable    Offset'(LSO)
+* Kafka Streams sets the internal embedded producer client with a transaction id to enable the idempotence and transactional messaging features, and also sets    its consumer client with the read-committed mode to only fetch messages from committed transactions from the upstream producers
 
 ### Quota
 
