@@ -71,6 +71,7 @@
   * Kafka's zero copy, page cache leverage, message batching, smaller heap and sequential disk access provide good performance
   * Kafka's performance is effectively constant with respect to data size so storing data for a long time is not a problem
   * Kafka's consumers keep track of their progress in separate internal Kafka topics adding very little overhead to the brokers
+  * Kafka supports space efficient publish-subscribe as there is only single log no matter how many consumer groups are there
 
 ### Basics
 
@@ -166,7 +167,7 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 * Followers don't serve client request. Their only job is to replicate messages from the leader and stay in sync with the leader
 * Each follower constantly pulls new messages from the leader using a single socket channel. That way, the follower receives all messages in the same order as    written in the leader
 * A message is considered committed when all the ISR have been updated
-* Consumers don't see uncommitted messages
+* Consumers don't see uncommitted messages regardless of the `acks` setting which affects only the acknowledgement to the producer
 * **Replication flow** 
   * The client fetches the metadata from a bootstrap broker and caches it during initialization
   * If the client gets `NotLeaderForPartition`, it fetches the latest metadata info from a broker and caches it
@@ -194,6 +195,7 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
   * fetches metadata information when `metadata.max.age.ms` expires or "Not a leader" error is returned (partition leader moved to a different broker due to failure)
   * Metadata requests can be sent to any broker because all brokers cache this information
 * If all the replicas crash, the data that is committed but not written to the disk are lost
+* Kafka MirrorMaker provides geo-replication support for your clusters. With MirrorMaker, messages are replicated across multiple datacenters or cloud regions.   You can use this in active/passive scenarios for backup and recovery; or in active/active scenarios to place data closer to your users, or support data         locality requirements
 
 ### Retention 
 
@@ -201,7 +203,15 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
   * Each partition is split into multiple segments
   * By default, each segment contains 1 GB of data (`log.segment.bytes`) or 1 week worth of data (`log.roll.ms` or `log.roll.hours`) whichever is smaller
   * If either of the segment limits is reached, the segment file is closed and a new segment file is created
-  * Kafka brokers always keeps an open file handle to the active segment of each partition
+  * Kafka brokers always keeps 3 open file handles for all the segments of all the partition - even inactive segments
+    * File handle to the segment file
+    * File handle to the offset index of the segment file
+    * File handle to the time index of the segment file (introduced in release 0.10.1.0)
+  * Offset index contains a mapping between a relative message offset (within the segment) and the corresponding physical location in the segment file. This      allows Kafka to quickly lookup a given offset in a segment file
+  * Time index contains a mapping between a relative message offset (within the segment) and the corresponding message time (LogAppendTime or CreateTime          depending on `log.message.timestamp.type`). The following functionalities will refer to the time index
+    * Search based on timestamp
+    * Time based retention
+    * Time based rotation
   * The segment being currently written to for a given partition is called active segment
   * Active segments are never deleted even if the retention criteria is met
   * If the retention policy is set as "delete", the old segments are deleted depending on retention criteria
@@ -210,7 +220,7 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
   * Avoid underestimating as one partition will always be read by only one consumer
   * Avoid overestimating as each partition uses memory and other resources on a broker and increases the leader election time
 * **Log Retention**
-  * Retention by time is done based on the last modification time of the segment file (which is usually the last time a message is added to the segment unless some admistrative activities moved the partitions across brokers resulting is excess retention)
+  * ~~Retention by time is done based on the last modification time of the segment file (which is usually the last time a message is added to the segment unless some admistrative activities moved the partitions across brokers resulting is excess retention)~~ (Prior to release 0.10.1.0)
   * Default log retention size is 1 GB (`log.retention.bytes`). This configuration is applicable per partition and NOT per topic
   * `log.retention.ms`, `log.retention.minutes` & `log.retention.hours` - If more than one of these parameters are set, the smallest unit takes precedence
   * `log.retention.check.interval.ms` = The frequency at which the log cleaner checks if there is any log for deletion 
@@ -321,6 +331,7 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
   * `fetch.message.max.bytes` (consumer) & `replica.fetch.max.bytes` must match with `message.max.bytes`
   * Larger `message.max.bytes` will impact disk I/O throughput
   * `compression.type` - Accepts the standard compression codecs ('gzip', 'snappy', 'lz4', 'zstd'). It additionally accepts 'uncompressed' which is equivalent    to no compression; and 'producer' which means retain the original compression codec set by the producer
+  * `lz4` is the fastest among the compression algorithms (around 800 mbps)
 
 ## Kafka Producers
 
@@ -378,6 +389,9 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 * `batch.size` - When multiple records are sent to the same partition, the producer will batch them together. This parameter controls the amount of memory in bytes (not messages!) that will be used for each batch
 * `linger.ms` - linger.ms controls the amount of time to wait for additional messages before sending the current batch. KafkaProducer sends a batch of messages either when the current batch is full or when the linger.ms limit is reached
 * `client.id` - This can be any string, and will be used by the brokers to identify messages sent from the client. It is used in logging and metrics, and for quotas
+* In 2.4.0 release, the DefaultPartitioner now uses a sticky partitioning strategy. This means that records for specific topic with null keys and no assigned     partition will be sent to the same partition until the batch is ready to be sent. When a new batch is created, a new partition is chosen. This decreases        latency to produce, but it may result in uneven distribution of records across partitions in edge cases
+*  
+
 
 ## Kafka Consumers
 
@@ -654,6 +668,20 @@ bin\windows\kafka-console-consumer.bat --bootstrap-server localhost:9092 ^
   * Latency
   * Durability
   * Availability
+* Partitions are the unit of parallelism. On both the producer and the broker side, writes to different partitions can be done fully in parallel. Therefore, in   general, more partitions lead to higher throughput. However, following tradeoffs need to be considered
+  * More partitions need more open file handles (3 per segment - the segment itself, offset index, time index)
+  * More partitions need more memory map areas (2 per segment - the offset index, time index)
+  * ~~More partitions may increase unavailability - In the event of broker failure, the partitions for which the broker is a leader may remain unavailable for    sometime as the partition leader need to be elected by modifying the Zookeeper metadata sequentially for each partition. If the failed broker happens to      be the controller, it would mean a further downtime for the partitions as a new broker elected as the new controller needs to read the metadata from          Zookeeper for each partition in the cluster. A total downtime of a few seconds for the impacted partitions are expected~~ Post release 1.1.0 with the use     of Zookeeper async APIs and batching request to other brokers during failover, things have improved here
+  * More partitions may increase latency as a limited number of threads in a given broker will do replication in the broker for all the partitions in the         cluster. Unless the in-sync replicas are all updated (committed), the message will not be available to the consumers
+  * More partitions means more memory requirements for producer as each producer thread will have some buffer for each partiton
+* As a rule of thumb, we recommend each broker to have up to 4,000 partitions and each cluster to have up to 200,000 partitions
+
+### Deploying on AWS
+
+* EBS st1 for `log.dirs`
+* d2.xlarge if you’re using instance storage, or r4.xlarge if you’re using EBS
+* Kafka was designed to run within a single data center. As such, we discourage distributing brokers in a single cluster across multiple regions. However, we     recommend “stretching” brokers in a single cluster across availability zones within the same region
+* Kafka 0.10 supports rack awareness, which makes spreading replicas across availability zones much easier to configure
 
 ### ZooKeeper Basics
 
@@ -712,3 +740,8 @@ bin\windows\kafka-console-consumer.bat --bootstrap-server localhost:9092 ^
 * https://kafka.apache.org/
 * Udemy courses by https://www.udemy.com/user/stephane-maarek/
 * https://www.confluent.io/blog/
+* https://engineering.linkedin.com/kafka/benchmarking-apache-kafka-2-million-writes-second-three-cheap-machines
+* https://linux-kernel-labs.github.io/master/labs/memory_mapping.html
+* https://www.confluent.io/blog/how-choose-number-topics-partitions-kafka-cluster/
+* https://www.confluent.io/blog/apache-kafka-supports-200k-partitions-per-cluster/
+* https://www.confluent.io/blog/design-and-deployment-considerations-for-deploying-apache-kafka-on-aws/
