@@ -16,7 +16,7 @@
 
   - [Compaction](#compaction)
 
-  - [Rebalancing](#rebalancing)
+  - [Rebalancing Consumer Groups](#rebalancing-consumer-groups)
 
   - [Delivery Symantics](#delivery-symantics)
 
@@ -241,7 +241,7 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 * Compaction will never re-order messages, just remove some
 * Cleaning is done by a separate pool of threads `log.cleaner.threads` at an interval 
 
-### Rebalancing
+### Rebalancing Consumer Groups
 
 * Rebalancing is the process where a group of consumer instances (belonging to the same group) co-ordinate to own a mutually exclusive set of partitions of       topics that the group has subscribed to
 * Every partition for all subscribed topics will be owned by a single consumer instance
@@ -595,9 +595,8 @@ bin\windows\kafka-topics.bat ^
 **List consumer groups**
 
 ```
-bin\windows\kafka-consumer-groups.bat
-    --new-consumer
-    --bootstrap-server localhost:9092
+bin\windows\kafka-consumer-groups.bat ^
+    --bootstrap-server localhost:9092 ^
     --list
 ```
 
@@ -610,13 +609,54 @@ Among other things following fields are displayed
 * LAG - The difference between the consumer Current-Offset and the broker Log-End-Offset for the topic partition
 
 ```
-bin\windows\kafka-consumer-groups.bat
-    --new-consumer
-    --bootstrap-server localhost:9092
-    --describe
-    --group testgroup
+bin\windows\kafka-consumer-groups.bat ^
+    --bootstrap-server localhost:9092 ^
+    --describe ^
+    --group testgroup ^
+    --members ^ REM Lists active members
+    --verbose   REM Gives partition assignments
 
 ```
+
+**Delete consumer group**
+
+```
+bin\windows\kafka-consumer-groups.bat ^
+    --bootstrap-server localhost:9092 ^
+    --delete ^
+    --group my-group ^
+    --group my-other-group
+```
+
+**Reset Offset**
+
+```
+bin\windows\kafka-consumer-groups.bat ^
+    --bootstrap-server localhost:9092 ^
+    --reset-offsets ^
+    --group consumergroup1 ^
+    --topic topic1 ^
+    --to-latest
+```
+
+**Adding or decommissioning brokers**
+
+* The following command only generates the plan. However, it is not aware of partitions size, and neither can provide a plan to reduce the number of partitions   to migrate from brokers to brokers. Therefore, edit the plan on your own
+* Once the plan is ready, execute it with the option `--execute`
+* Finally verify the status using `--verify`
+* Throttling is important to ensure producers and consumers in the cluster are not impacted
+* The throttle can be changed even when the rebalance is ongoing by rerunning the same command with the new throttle value
+* `--verify` option removes the throttle
+
+```
+bin\windows\kafka-reassign-partitions.sh 
+    --zookeeper localhost:2181 
+    --topics-to-move-json-file topics-to-move.json 
+    --broker-list "5,6" 
+    --generate
+    --—throttle 50000000  REM 50MB/sec
+```
+
 ```
 bin\windows\kafka-console-producer.bat --broker-list localhost:9092 --topic word-count-input
 ```
@@ -745,3 +785,4 @@ bin\windows\kafka-console-consumer.bat --bootstrap-server localhost:9092 ^
 * https://www.confluent.io/blog/how-choose-number-topics-partitions-kafka-cluster/
 * https://www.confluent.io/blog/apache-kafka-supports-200k-partitions-per-cluster/
 * https://www.confluent.io/blog/design-and-deployment-considerations-for-deploying-apache-kafka-on-aws/
+* https://labs.tabmo.io/rebalancing-kafkas-partitions-803918d8d244
