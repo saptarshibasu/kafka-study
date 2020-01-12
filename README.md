@@ -42,6 +42,8 @@
 
   - [Production Deployment](#production-deployment)
 
+  - [Key Metrics](#key-metrics)
+
   - [ZooKeeper Basics](#zooKeeper-basics)
 
   - [Avro Basics](#avro-basics)
@@ -203,6 +205,9 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 * If all the replicas crash, the data that is committed but not written to the disk are lost
 * Kafka MirrorMaker provides geo-replication support for your clusters. With MirrorMaker, messages are replicated across multiple datacenters or cloud regions.   You can use this in active/passive scenarios for backup and recovery; or in active/active scenarios to place data closer to your users, or support data         locality requirements
 * To support fetching from the follower replica (because the partition leader is not available on the same rack) based on HW, Kafka leader doesn't delay          responding to replica fetch requests if the follower has obsolete HW
+*  If a replica constantly drops out of and rejoins isr, you may need to increase `replica.lag.max.messages`
+* If a replica stays out of ISR for a long time, it may indicate that the follower is not able to fetch data as fast as data is accumulated at the leader. You    can increase the follower’s fetch throughput by setting a larger value for `num.replica.fetchers`
+* `replica.lag.time.max.ms` - This is typically set to a value that reliably detects the failure of a broker. If the metric `MinFetchRate` is `n`, set the        value for this config to larger than `1/n * 1000`
 
 ### Retention 
 
@@ -672,19 +677,72 @@ bin\windows\kafka-consumer-groups.bat ^
 * `--verify` option removes the throttle
 
 ```
-bin\windows\kafka-reassign-partitions.sh 
-    --zookeeper localhost:2181 
-    --topics-to-move-json-file topics-to-move.json 
-    --broker-list "5,6" 
-    --generate
+bin\windows\kafka-reassign-partitions.bat ^
+    --zookeeper localhost:2181 ^
+    --topics-to-move-json-file topics-to-move.json ^
+    --broker-list "5,6" ^
+    --generate ^
     --—throttle 50000000  REM 50MB/sec
 ```
 
+**Update dynamic config**
+
+* The following command updated sets the parameter `log.cleaner.thread` for broker id `0`
+
 ```
-bin\windows\kafka-console-producer.bat --broker-list localhost:9092 --topic word-count-input
+bin\windows\kafka-configs.bat ^
+    --bootstrap-server localhost:9092 ^
+    --entity-type brokers ^
+    --entity-name 0 ^
+    --alter ^
+    --add-config log.cleaner.threads=2
 ```
+
+**Describe dynamic config**
+
 ```
-bin\windows\kafka-console-consumer.bat --bootstrap-server localhost:9092 ^
+bin\windows\kafka-configs.bat ^
+    --bootstrap-server localhost:9092 ^
+    --entity-type brokers ^
+    --entity-name 0 ^
+    --describe
+```
+
+**Delete dynamic config**
+
+```
+bin\windows\kafka-configs.bat ^
+    --bootstrap-server localhost:9092 ^
+    --entity-type brokers ^
+    --entity-name 0 ^
+    --alter ^
+    --delete-config log.cleaner.threads
+```
+
+**Update cluster-wide default dynamic config**
+
+```
+bin\windows\kafka-configs.bat ^
+    --bootstrap-server localhost:9092 ^
+    --entity-type brokers ^
+    --entity-default ^
+    --alter ^
+    --add-config log.cleaner.threads=2
+```
+
+**Console producer**
+
+```
+bin\windows\kafka-console-producer.bat ^
+    --broker-list localhost:9092 ^
+    --topic word-count-input
+```
+
+**Console consumer**
+
+```
+bin\windows\kafka-console-consumer.bat ^
+    --bootstrap-server localhost:9092 ^
     --topic word-count-output ^
     --from-beginning ^
     --formatter kafka.tools.DefaultMessageFormatter ^
@@ -738,6 +796,18 @@ bin\windows\kafka-console-consumer.bat --bootstrap-server localhost:9092 ^
   * More partitions may increase latency as a limited number of threads in a given broker will do replication in the broker for all the partitions in the         cluster. Unless the in-sync replicas are all updated (committed), the message will not be available to the consumers
   * More partitions means more memory requirements for producer as each producer thread will have some buffer for each partiton
 * As a rule of thumb, we recommend each broker to have up to 4,000 partitions and each cluster to have up to 200,000 partitions
+
+### Key Metrics
+
+* Consumer Metrics
+  * `MaxLag` - The number of messages the consumer lags behind the producer
+  * `MinFetchRate` - If the MinFetchRate of the consumer drops to almost 0, the consumer is likely to have stopped. If the MinFetchRate is non-zero and           relatively constant, but the consumer lag is increasing, it indicates that the consumer is slower than the producer. If so, the typical solution is to        increase the degree of parallelism in the consumer. This may require increasing the number of partitions of a topic
+* Broker Metrics
+  * `UnderReplicatedPartitions` - Number of under-replicated partitions (| ISR | < | all replicas |). Alert if value is greater than 0
+  * `OfflinePartitionsCount` - Number of partitions that don’t have an active leader and are hence not writable or readable. Alert if value is greater than 0
+  * `ActiveControllerCount` - Number of active controllers in the cluster. Alert if the aggregated sum across all brokers in the cluster is anything other than   1 because there should be exactly one controller per cluster
+  * `MinFetchRate` - Rate of fetching messages from the leader by the replicas
+  * `MaxLag` - The number of messages the replica lags behind the leader
 
 ### Deploying on AWS
 
