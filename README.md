@@ -86,6 +86,7 @@
 * Producers and Consumers are Kafka clients
 * A message in kafka is a key-value pair with a small amount of associated metadata
 * A message set is a group of messages and is the unit of compression
+* The broker always decompresses the batch to validate
 * Kafka only provides a total order over records within a partition, not between different partitions in a topic
 * As Kafka writes its data to local disk, the data may linger in the filesystem cache and may not make its way to the disk. The disk flush parameter are not      recommended to set for performance reasons. Therefore Kafka relies solely on replication for reliability
 * In Linux, data written to the filesystem is maintained in pagecache until it must be written out to disk (due to an application-level fsync or the OS's         ownflush policy)
@@ -119,6 +120,11 @@
   * REST Proxy: 8082
   * Schema Registry: 8081
   * KSQL: 8088
+* Prior to release 2.4.0, the records with null keys will be distrubuted across partitions in a round-robin manner
+* After release 2.4.0, with the introduction of sticky partitioning strategy, the records will be routed to the same partition until the batch completion         criteria (`batch.size` & `linger.ms`) are fulfilled
+* **Rack Awareness** -
+  * `broker.rack` - If set for a broker, the replicas will be placed to ensure all replicas are not on the same rack. Useful when the brokers are spread across    datacenters or AZ in AWS within the same region
+  * `client.rack` - Release 2,4,0 onwards, it allows the consumer to fetch from a follower replica on the same rack, if the partion leader is not available on the same rack
 
 ### Performance
 
@@ -196,6 +202,7 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
   * Metadata requests can be sent to any broker because all brokers cache this information
 * If all the replicas crash, the data that is committed but not written to the disk are lost
 * Kafka MirrorMaker provides geo-replication support for your clusters. With MirrorMaker, messages are replicated across multiple datacenters or cloud regions.   You can use this in active/passive scenarios for backup and recovery; or in active/active scenarios to place data closer to your users, or support data         locality requirements
+* To support fetching from the follower replica (because the partition leader is not available on the same rack) based on HW, Kafka leader doesn't delay          responding to replica fetch requests if the follower has obsolete HW
 
 ### Retention 
 
@@ -265,6 +272,7 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
     * Co-ordinator responds back with the assignment information
   * Stable
 * Static membership with `group.instance.id` so that the same set of partitions are assigned back to the member after temporary network partitioning (within `session.timeout`) without a fresh rebalancing
+* Release 2.4.0 onwards, incremental rebalance protocol tries to minimize the partition migration and let the consumers retain their partitions during            rebalancing
 
 
 ### Delivery Symantics
@@ -324,7 +332,13 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 
 ### Broker Config
 
-* `auto.create.topics.enable` - Default value is true. It should be set to false in production as there is no way to validate the topic names.
+* `auto.create.topics.enable` - Default value is true. It should be set to false in production as there is no way to validate the topic names
+* Tuning for Throughput
+  * `compression.type = producer` (default value) - The broker will uncompress the batch to validate and then send the compressed message from producer           directly to the consumer
+* Tuning for latency
+  * `num.replica.fetchers` - Number of fetcher threads per broker. The threads are used to replicate the messages. Many partitions increase the latency as by      default there is only one thread per broker to do fetching from the leader broker for replication
+* Tuning for durability -
+  * `default.replication.factor = 3`
 * **Message Size**
   * `message.max.bytes` defaults to 1MB
   * `message.max.bytes` indicates the compressed message size
@@ -384,14 +398,17 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
   * The producer will receive a success response after all the in-sync replicas received the message
   * Message is durable
   * Latency is high
-* `buffer.memory` - The memory buffer that will store the messages before being sent out to a broker. If the buffer runs out of space, the thread will remain blocked for `max.block.ms` before throwing an exception. This setting should correspond roughly to the total memory the producer will use, but is not a hard bound since not all memory the producer uses is used for buffering. Some additional memory will be used for compression (if compression is enabled) as well as for maintaining in-flight requests
+* `buffer.memory` - The memory buffer that will store the messages before being sent out to a broker. If the buffer runs out of space, the thread will remain     blocked for `max.block.ms` before throwing an exception. This setting should correspond roughly to the total memory the producer will use, but is not a hard    bound since not all memory the producer uses is used for buffering. Some additional memory will be used for compression (if compression is enabled) as well     as for maintaining in-flight requests
 * `compression.type` - By default messages are uncompressed. Supported compression algorithms - `gzip`, `snappy`, `lz4` and `zstd`
-* `batch.size` - When multiple records are sent to the same partition, the producer will batch them together. This parameter controls the amount of memory in bytes (not messages!) that will be used for each batch
-* `linger.ms` - linger.ms controls the amount of time to wait for additional messages before sending the current batch. KafkaProducer sends a batch of messages either when the current batch is full or when the linger.ms limit is reached
 * `client.id` - This can be any string, and will be used by the brokers to identify messages sent from the client. It is used in logging and metrics, and for quotas
 * In 2.4.0 release, the DefaultPartitioner now uses a sticky partitioning strategy. This means that records for specific topic with null keys and no assigned     partition will be sent to the same partition until the batch is ready to be sent. When a new batch is created, a new partition is chosen. This decreases        latency to produce, but it may result in uneven distribution of records across partitions in edge cases
-*  
-
+* Tuning for throughput
+  * `acks = 1` (default value) - The leader broker will send the acknowledge as soon as it has writtent the record in int local log. The acknowledgement will     not wait for the replicas to write the record in their logs. The tradeoff is less durability.
+  * `compression.type = lz4`
+  * `batch.size` - The records for a given partition are usually sent in batches to amortize the network roundtrip, improve compression ratio and reduce the      load of processing messages in producer and broker. The batch will not be sent to the broker until the `batch.size` is full or `linger.ms` is expired. The    tradeoff is higher latency
+  * `linger.ms` - The producer will wait for `linger.ms` duration before sending the batch to the broker unless the `batch.size` is full
+* Tuning for latency
+  * `linger.ms = 0` (default) - The producer will send the message as soon as it has some data to send. Batching will still happen if more messages are           available at the    time of sending
 
 ## Kafka Consumers
 
@@ -404,7 +421,7 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 * `session.timeout.ms` defines how long the coordinator waits after the member’s last heartbeat before it assuming the member failed
   * With a low value, a network jitter or a long garbage collection (GC) might fail the liveness check, causing the group coordinator to remove this member and begin rebalancing
   * With a longer value, there will be a longer partial unavailability when a consumer actually fails
-* A consumer can look up its coordinator by issuing a `FindCoordinatorRequest` to any Kafka broker and reading the `FindCoordinatorResponse` which will contain the coordinator details
+* A consumer can look up its coordinator by issuing a `FindCoordinatorRequest` to any Kafka broker and reading the `FindCoordinatorResponse` which will contain   the coordinator details
 * The consumer can then proceed to commit or fetch offsets from the coordinator broker
 * The broker sends a successful offset commit response to the consumer only after all the replicas of the offsets topic receive the offsets
 * In case the offsets fail to replicate within a configurable timeout, the offset commit will fail and the consumer may retry the commit after backing off
@@ -414,7 +431,6 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
   * `key.deserializer`
   * `value.deserializer`
   * `bootstrap.servers`
-  * `fetch.min.bytes` - The minimum amount of data the server should return for a fetch request. If insufficient data is available the request will wait for      that much data to accumulate before answering the request. The default setting of 1 byte means that fetch requests are answered as soon as a single byte of   data is available or the fetch request times out waiting for data to arrive. Setting this to something greater than 1 will cause the server to wait for       larger amounts of data to accumulate which can improve server throughput a bit at the cost of some additional latency
   * `group.id` - A unique string that identifies the consumer group this consumer belongs to. This property is required if the consumer uses either the group     management functionality by using subscribe(topic) or the Kafka-based offset management strategy
   * `heartbeat.interval.ms` - The expected time between heartbeats to the consumer coordinator when using Kafka's group management facilities. Heartbeats are     used to ensure that the consumer's session stays active and to facilitate rebalancing when new consumers join or leave the group. The value must be set       lower than session.timeout.ms, but typically should be set no higher than 1/3 of that value. It can be adjusted even lower to control the expected time for   normal rebalances
   * `max.partition.fetch.bytes` - The maximum amount of data per-partition the server will return. Records are fetched in batches by the consumer. If the first   record batch in the first non-empty partition of the fetch is larger than this limit, the batch will still be returned to ensure that the consumer can make   progress. The maximum record batch size accepted by the broker is defined via `message.max.bytes` (broker config) or `max.message.bytes` (topic config)
@@ -433,6 +449,13 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 * Users can also control when records should be considered as consumed and hence commit their offsets. We will manually commit the offsets only after the       corresponding records have been inserted into the database. This gives us "at least once" delivery semantic where the message will be delivered once, but     in failure cases, it could be possibly delivered twice
 * The consumer application need not use Kafka's built-in offset storage, it can store offsets in a store of its own choosing. The primary use case for this     is allowing the application to store both the offset and the results of the consumption in the same system in a way that both the results and offsets are     stored atomically. This will give us "exactly-once" semantics
 * Kafka consumer stores the last offset read in a special Kafka topic
+* Tuning for throughput
+  * `fetch.min.bytes` - The broker won't send messages to the consumer, until this much volume of data is available or `fetch.max.wait.ms` duration is over.      It reduces the consumer load for processing a message. The tradeoff is latency
+  * `fetch.max.wait.ms`
+* Tuning for latency
+  * `fetch.min.bytes = 1` (default value) - The broker will send message as soon as there is at least 1 byte data available
+* Tuning for durability 
+  * `enable.auto.commit = false`
 
 ## Kafka Streams
 
@@ -774,15 +797,30 @@ bin\windows\kafka-console-consumer.bat --bootstrap-server localhost:9092 ^
 
 ## References
 
+### Books
+
 * Narkhede, Neha. Kafka: The Definitive Guide . O'Reilly Media. Kindle Edition
-* https://jira.apache.org/jira/projects/KAFKA/issues
-* https://cwiki.apache.org/confluence/collector/pages.action?key=KAFKA
-* https://kafka.apache.org/
-* Udemy courses by https://www.udemy.com/user/stephane-maarek/
-* https://www.confluent.io/blog/
+* Kleppmann, Martin. Making Sense of Stream Processing: The Philosophy Behind Apache Kafka and Scalable Stream Data Platforms . O'Reilly
+
+### White Paper
+
+* Byzek, Yeva. Optimizing Your Apache Kafka Deployment: Levers for Throughput, Latency, Durability, and Availability
+
+### Useful Blogs on Operational Stuff
 * https://engineering.linkedin.com/kafka/benchmarking-apache-kafka-2-million-writes-second-three-cheap-machines
 * https://linux-kernel-labs.github.io/master/labs/memory_mapping.html
 * https://www.confluent.io/blog/how-choose-number-topics-partitions-kafka-cluster/
 * https://www.confluent.io/blog/apache-kafka-supports-200k-partitions-per-cluster/
 * https://www.confluent.io/blog/design-and-deployment-considerations-for-deploying-apache-kafka-on-aws/
 * https://labs.tabmo.io/rebalancing-kafkas-partitions-803918d8d244
+
+### Udemy Courses
+
+* Udemy courses by https://www.udemy.com/user/stephane-maarek/
+
+### Others
+
+* https://jira.apache.org/jira/projects/KAFKA/issues
+* https://cwiki.apache.org/confluence/collector/pages.action?key=KAFKA
+* https://kafka.apache.org/
+* https://www.confluent.io/blog/
