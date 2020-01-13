@@ -205,7 +205,7 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 * If all the replicas crash, the data that is committed but not written to the disk are lost
 * Kafka MirrorMaker provides geo-replication support for your clusters. With MirrorMaker, messages are replicated across multiple datacenters or cloud regions.   You can use this in active/passive scenarios for backup and recovery; or in active/active scenarios to place data closer to your users, or support data         locality requirements
 * To support fetching from the follower replica (because the partition leader is not available on the same rack) based on HW, Kafka leader doesn't delay          responding to replica fetch requests if the follower has obsolete HW
-*  If a replica constantly drops out of and rejoins isr, you may need to increase `replica.lag.max.messages`
+*  If a replica constantly drops out of and rejoins ISR, you may need to increase `replica.lag.max.messages`
 * If a replica stays out of ISR for a long time, it may indicate that the follower is not able to fetch data as fast as data is accumulated at the leader. You    can increase the follower’s fetch throughput by setting a larger value for `num.replica.fetchers`
 * `replica.lag.time.max.ms` - This is typically set to a value that reliably detects the failure of a broker. If the metric `MinFetchRate` is `n`, set the        value for this config to larger than `1/n * 1000`
 
@@ -347,7 +347,7 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 * **Message Size**
   * `message.max.bytes` defaults to 1MB
   * `message.max.bytes` indicates the compressed message size
-  * `fetch.message.max.bytes` (consumer) & `replica.fetch.max.bytes` must match with `message.max.bytes`
+  * `max.partition.fetch.bytes` (consumer) & `replica.fetch.max.bytes` must match with `message.max.bytes`
   * Larger `message.max.bytes` will impact disk I/O throughput
   * `compression.type` - Accepts the standard compression codecs ('gzip', 'snappy', 'lz4', 'zstd'). It additionally accepts 'uncompressed' which is equivalent    to no compression; and 'producer' which means retain the original compression codec set by the producer
   * `lz4` is the fastest among the compression algorithms (around 800 mbps)
@@ -414,6 +414,8 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
   * `linger.ms` - The producer will wait for `linger.ms` duration before sending the batch to the broker unless the `batch.size` is full
 * Tuning for latency
   * `linger.ms = 0` (default) - The producer will send the message as soon as it has some data to send. Batching will still happen if more messages are           available at the    time of sending
+* With `enable.idempotence = true`, Kafka can keep the message ordring in a partitioning even with `max.in.flight.requests.per.connection = 5`
+* In the absence of `enable.idempotence = true`, if `max.in.flight.requests.per.connection` is more than `1` and `retries` is also enabled, the message order     can change if the first message fails and the second message succeeds
 
 ## Kafka Consumers
 
@@ -421,7 +423,7 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 * Transparently adapts as topic partitions it fetches migrate within the cluster
 * Consumer is NOT thread-safe
 * If all the consumer instances have the same consumer group, then the records will effectively be load balanced over the consumer instances
-* If all the consumer instances have different consumer groups, then each record will be broadcast to all the consumer processes
+* Each record will be broadcast to all the consumer groups
 * Each consumer instance in a consumer group is the exclusive consumer of a "fair share" of partitions at any point in time
 * `session.timeout.ms` defines how long the coordinator waits after the member’s last heartbeat before it assuming the member failed
   * With a low value, a network jitter or a long garbage collection (GC) might fail the liveness check, causing the group coordinator to remove this member and begin rebalancing
@@ -437,7 +439,7 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
   * `value.deserializer`
   * `bootstrap.servers`
   * `group.id` - A unique string that identifies the consumer group this consumer belongs to. This property is required if the consumer uses either the group     management functionality by using subscribe(topic) or the Kafka-based offset management strategy
-  * `heartbeat.interval.ms` - The expected time between heartbeats to the consumer coordinator when using Kafka's group management facilities. Heartbeats are     used to ensure that the consumer's session stays active and to facilitate rebalancing when new consumers join or leave the group. The value must be set       lower than session.timeout.ms, but typically should be set no higher than 1/3 of that value. It can be adjusted even lower to control the expected time for   normal rebalances
+  * `heartbeat.interval.ms` - The expected time between heartbeats to the consumer coordinator when using Kafka's group management facilities. Heartbeats are     used to ensure that the consumer's session stays active and to facilitate rebalancing when new consumers join or leave the group. The value must be set       lower than `session.timeout.ms`, but typically should be set no higher than 1/3 of that value. It can be adjusted even lower to control the expected time     for normal rebalances
   * `max.partition.fetch.bytes` - The maximum amount of data per-partition the server will return. Records are fetched in batches by the consumer. If the first   record batch in the first non-empty partition of the fetch is larger than this limit, the batch will still be returned to ensure that the consumer can make   progress. The maximum record batch size accepted by the broker is defined via `message.max.bytes` (broker config) or `max.message.bytes` (topic config)
   * `session.timeout.ms` - The timeout used to detect client failures when using Kafka's group management facility. The client sends periodic heartbeats to       indicate its liveness to the broker. If no heartbeats are received by the broker before the expiration of this session timeout, then the broker will remove   this client from the group and initiate a rebalance. Note that the value must be in the allowable range as configured in the broker configuration by          `group.min.session.timeout.ms` and `group.max.session.timeout.ms`
   * `allow.auto.create.topics` - Should be set to false in production as there is no way to validate topic name
@@ -512,7 +514,6 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 * Connectors do not perform any data copying themselves: their configuration describes the data to be copied, and the Connector is responsible for breaking       that job into a set of Tasks that can be distributed to workers
 * Tasks also come in two corresponding flavors: `SourceTask` and `SinkTask`
 * With an assignment in hand, each Task must copy its subset of the data to or from Kafka
-* The SourceTask implementation included a stream ID (the input filename) and offset (position in the file) with each record. The framework uses this to commit   offsets periodically so that in the case of a failure, the task can recover and minimize the number of events that are reprocessed and possibly duplicated
 
 ## Schema Registry
 
@@ -528,7 +529,6 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 * Disable automatic schema registration by setting the configuration parameter auto.register.schemas=false, as shown in the example below
   ```
   props.put(AbstractKafkaAvroSerDeConfig.AUTO_REGISTER_SCHEMAS, false);
-
   ```
 
 ## KSQL
@@ -567,7 +567,7 @@ bin\windows\kafka-server-start.bat config\server.properties
 ```
 bin\windows\kafka-topics.bat ^
     --create ^
-    --zookeeper localhost:2181 ^
+    --bootstrap-server localhost:9092 ^
     --replication-factor 1 ^
     --partitions 2 ^
     --topic word-count-input
@@ -581,7 +581,7 @@ bin\windows\kafka-topics.bat ^
 ```
 bin\windows\kafka-topics.bat ^
     --delete ^
-    --zookeeper localhost:2181 ^
+    --bootstrap-server localhost:9092 ^
     --topic word-count-input
 ```
 
@@ -594,7 +594,7 @@ bin\windows\kafka-topics.bat ^
 ```
 bin\windows\kafka-topics.bat ^
     --alter ^
-    --zookeeper localhost:2181 ^
+    --bootstrap-server localhost:9092 ^
     --topic word-count-input ^
     --partitions 16 ^
 ```
@@ -604,7 +604,7 @@ bin\windows\kafka-topics.bat ^
 ```
 bin\windows\kafka-topics.bat ^
     --list ^
-    --zookeeper localhost:2181
+    --bootstrap-server localhost:9092
 ```
 
 **Describe a topic**
@@ -614,10 +614,11 @@ The output includes - partition count, topic configuration overrides, linting of
 ```
 bin\windows\kafka-topics.bat ^
     --describe ^
-    --zookeeper localhost:2181 ^
+    --bootstrap-server localhost:9092 ^
     --topics-with-overrides ^       REM Display topics having configurtion overrides
     --under-replicated-partitions ^ REM Display partitions with one or more out-of-sync replicas
-    --unavailable-partitions        REM Display partitions without a leader
+    --unavailable-partitions ^      REM Display partitions without a leader
+    --topic mytopic
 ```
 
 **List consumer groups**
@@ -643,7 +644,6 @@ bin\windows\kafka-consumer-groups.bat ^
     --group testgroup ^
     --members ^ REM Lists active members
     --verbose   REM Gives partition assignments
-
 ```
 
 **Delete consumer group**
@@ -681,8 +681,13 @@ bin\windows\kafka-reassign-partitions.bat ^
     --zookeeper localhost:2181 ^
     --topics-to-move-json-file topics-to-move.json ^
     --broker-list "5,6" ^
-    --generate ^
-    --—throttle 50000000  REM 50MB/sec
+    --generate
+
+bin\windows\kafka-reassign-partitions.bat ^
+    --zookeeper localhost:2181 ^
+    --reassignment-json-file expand-cluster-reassignment.json ^ REM JSON file content is the output of --generate command
+    --throttle 50000000 ^ REM 50MB/sec
+    --execute
 ```
 
 **Update dynamic config**
@@ -759,11 +764,11 @@ bin\windows\kafka-console-consumer.bat ^
 * Java 8 with G1 Collector
 * On AWS, for lower latency I/O optimized instances will be good
 * Extents File System (XFS) perform well for Kafka Workload
-* the mountpoints should have `noatime` option set to eliminate the 
+* The mount points should have `noatime` option set to eliminate the overhead of updating access time
 * export KAFKA_JVM_PERFORMANCE_OPTS="-server -XX:+UseG1GC -XX:MaxGCPauseMillis=20 -XX:InitiatingHeapOccupancyPercent=35 -XX:+DisableExplicitGC-Djava.awt.headless=true"
 * `vm.swappiness = 1` - A low value means the kernel will try to avoid swapping as much as possible making less memory available for page cache
 * `vm.dirty_background_ratio = 5` (default - 10) - The percentage of system memory which when dirty, system will start writing to disk
-* `vm.dirty_ratio = 60` (default - 15) - The percentage of memory which when dirty, the process doing writes would block and write out dirty pages to thedisks
+* `vm.dirty_ratio = 60` (default - 15) - The percentage of memory which when dirty, the process doing writes would block and write out dirty pages to the disks
 * Tuning `vm.dirty_background_ratio` and `vm.dirty_ratio` as above relies on:
   * Good disk I/O performance (SSD or RAID)
   * Replication is used in the cluster to guard against system failure
