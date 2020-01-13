@@ -236,6 +236,7 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
   * Default log retention size is 1 GB (`log.retention.bytes`). This configuration is applicable per partition and NOT per topic
   * `log.retention.ms`, `log.retention.minutes` & `log.retention.hours` - If more than one of these parameters are set, the smallest unit takes precedence
   * `log.retention.check.interval.ms` = The frequency at which the log cleaner checks if there is any log for deletion 
+* `offsets.retention.minutes` & `log.retention.hours` - the default retention is set to 7 days equivalent
 
 ### Compaction
 
@@ -466,6 +467,7 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 
 ## Kafka Streams
 
+* Kafka Streams application do not run inside the Kafka brokers (servers) or the Kafka cluster – they are client-side applications
 * StreamsConfig.APPLICATION_ID_CONFIG (application.id) -
   * Mandatory
   * Consumer group id
@@ -504,6 +506,10 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
   * Hopping time window - Hopping time windows are windows based on time intervals. They model fixed-sized, (possibly) overlapping windows. A hopping window is defined by two properties: the window’s size and its advance interval (aka “hop”). The advance interval specifies by how much a window moves forward relative to the previous one
   * Sliding time window - A sliding window models a fixed-size window that slides continuously over the time axis; here, two data records are said to be included in the same window if (in the case of symmetric windows) the difference of their timestamps is within the window size. Thus, sliding windows are not aligned to the epoch, but to the data record timestamps
   * Session window
+* `num.stream.threads` - The number of threads per streams app instance
+* It is generally preferable to use `mapValues()` and `flatMapValues()` as they ensure the key has not been modified and thus, the repartitioning step can be     omitted
+* Kafka Streams inserts a repartitioning step if a key-based operation like aggregation or join is preceded by a key changing operation like `selectKey()`,       `map()`, or `flatMap()`
+* Joining with a KStream will always yield a KStream
 
 ## Kafka Connect
 
@@ -530,6 +536,7 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
   ```
   props.put(AbstractKafkaAvroSerDeConfig.AUTO_REGISTER_SCHEMAS, false);
   ```
+* Kafka is used as Schema Registry storage backend
 
 ## KSQL
 
@@ -546,6 +553,12 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
   * CREATE STREAM AS SELECT (CSAS)
   * CREATE TABLE AS SELECT (CTAS)
 * The CSAS and CTAS statements occupy both categories, because they perform both a metadata change, like adding a stream, and they manipulate data, by creating   a derivative of existing records
+* In headless mode, KSQL stores metadata in the config topic
+* In interactive mode, KSQL stores metatada in and builds metadata ifrom the KSQL command topic. To secure the metadata, you must secure the command topic
+* SHOW STREAMS and EXPLAIN <query> statements run against the KSQL server that the KSQL client is connected to. They don’t communicate directly with Kafka
+* CREATE STREAM WITH <topic> and CREATE TABLE WITH <topic> write metadata to the KSQL command topic
+* Non-persistent queries based on SELECT that are stateless only read from Kafka topics, for example SELECT … FROM foo WHERE ….
+* Non-persistent queries that are stateful read and write to Kafka, for example, COUNT and JOIN. The data in Kafka is deleted automatically when you terminate    the query with CTRL-C
 
 
 ## Kafka CLI
