@@ -126,7 +126,7 @@
 * After release 2.4.0, with the introduction of sticky partitioning strategy, the records will be routed to the same partition until the batch completion         criteria (`batch.size` & `linger.ms`) are fulfilled
 * **Rack Awareness** -
   * `broker.rack` - If set for a broker, the replicas will be placed to ensure all replicas are not on the same rack. Useful when the brokers are spread across    datacenters or AZ in AWS within the same region
-  * `client.rack` - Release 2,4,0 onwards, it allows the consumer to fetch from a follower replica on the same rack, if the partion leader is not available on the same rack
+  * `client.rack` - Release 2.4.0 onwards, it allows the consumer to fetch from a follower replica on the same rack, if the partion leader is not available on the same rack
 
 ### Performance
 
@@ -171,7 +171,7 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 * Conditions for ISR
   * It has sent a heartbeat to Zookeeper in last 6 seconds
   * It has requested message from the leader within last 10 seconds (`replica.lag.time.max.ms`)
-  * It has fetched the LEO from the leader in the last 10 seconds
+  * It has fetched the LEO from the leader in the last 10 seconds (`replica.lag.time.max.ms`)
 * Followers don't serve client request. Their only job is to replicate messages from the leader and stay in sync with the leader
 * Each follower constantly pulls new messages from the leader using a single socket channel. That way, the follower receives all messages in the same order as    written in the leader
 * A message is considered committed when all the ISR have been updated
@@ -184,7 +184,7 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
   * The follower receives all messages in the same order as written in the leader (Followers constantly pull messages from the leader)
   * The follower writes each received message to its own log 
   * The follower Sends an acknowledgment back to the leader
-  * Once the leader receives the acknowledgment from all the replicas in ISR or a timeout occurs, the message is committed
+  * Once the leader finds that the the replicas in ISR have LEO >= the given offset within a timeout, the message is committed
   * The leader advances the HW 
   * the leader sends an acknowledgment to the client
 * Leader replica shares its HW to the followers by piggybacking the value with the return value of the fetch requests from the followers
@@ -198,16 +198,16 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
   * If the controller goes down, another broker will become the controller with a higher epoch number and thus preventing "split brain" from occuring
 * **Client**
   * Must send the fetch requests to the leader replica of a given partition (otherwise "Not a leader" error is returned)
-  * Knows about the replica and broker details for a given topic using metadata requests
+  * Knows about the leader replica and broker details for a given topic using metadata requests
   * Caches the metadata information
   * fetches metadata information when `metadata.max.age.ms` expires or "Not a leader" error is returned (partition leader moved to a different broker due to failure)
   * Metadata requests can be sent to any broker because all brokers cache this information
 * If all the replicas crash, the data that is committed but not written to the disk are lost
 * Kafka MirrorMaker provides geo-replication support for your clusters. With MirrorMaker, messages are replicated across multiple datacenters or cloud regions.   You can use this in active/passive scenarios for backup and recovery; or in active/active scenarios to place data closer to your users, or support data         locality requirements
 * To support fetching from the follower replica (because the partition leader is not available on the same rack) based on HW, Kafka leader doesn't delay          responding to replica fetch requests if the follower has obsolete HW
-*  If a replica constantly drops out of and rejoins ISR, you may need to increase `replica.lag.max.messages`
+* ~~If a replica constantly drops out of and rejoins ISR, you may need to increase `replica.lag.max.messages`~~ Removed in release 0.9.0
 * If a replica stays out of ISR for a long time, it may indicate that the follower is not able to fetch data as fast as data is accumulated at the leader. You    can increase the follower’s fetch throughput by setting a larger value for `num.replica.fetchers`
-* `replica.lag.time.max.ms` - This is typically set to a value that reliably detects the failure of a broker. If the metric `MinFetchRate` is `n`, set the        value for this config to larger than `1/n * 1000`
+* `replica.lag.time.max.ms` - This is typically set to a value that reliably detects the failure of a broker for the purpose of moving it out of ISR. If the      metric `MinFetchRate` is `n`, set the value for this config to larger than `1/n * 1000`
 
 ### Retention 
 
@@ -236,7 +236,7 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
   * Default log retention size is 1 GB (`log.retention.bytes`). This configuration is applicable per partition and NOT per topic
   * `log.retention.ms`, `log.retention.minutes` & `log.retention.hours` - If more than one of these parameters are set, the smallest unit takes precedence
   * `log.retention.check.interval.ms` = The frequency at which the log cleaner checks if there is any log for deletion 
-* `offsets.retention.minutes` & `log.retention.hours` - the default retention is set to 7 days equivalent
+* `offsets.retention.minutes` (for consumer offset log) & `log.retention.hours` (for regular logs) - the default retention is set to 7 days equivalent
 
 ### Compaction
 
@@ -287,9 +287,9 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
   * idempotence - `enable.idempotence` (broker config)
   * transaction - `transactional.id` (producer config)
 * Kafka supports
-  * At most once — Messages may be lost but are never redelivered.
-  * At least once — Messages are never lost but may be redelivered.
-  * Exactly once — this is what people actually want, each message is delivered once and only once.
+  * At most once — Messages may be lost but are never redelivered
+  * At least once — Messages are never lost but may be redelivered
+  * Exactly once — this is what people actually want, each message is delivered once and only once
 * Producer Perspective
   * At most once - No retry if successful response from broker is not received (`retries = 0`)
   * At least once - If no success response received from broker, retry again (`retries = Integer.MAX_VALUE`, `delivery.timeout.ms = 120000`)
@@ -314,7 +314,7 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 * Kafka default `isolation.level` is `read_uncommitted`
 * `read_uncommitted` - consume both committed and uncommitted messages in offset ordering.
 * `read_committed` - Only consume non-transactional messages or committed transactional messages in offset order. The end offset of a partition for a             read_committed consumer would be the offset of the first message in the partition belonging to an open transaction. This offset is known as the 'Last Stable    Offset'(LSO)
-* Kafka Streams sets the internal embedded producer client with a transaction id to enable the idempotence and transactional messaging features, and also sets    its consumer client with the read-committed mode to only fetch messages from committed transactions from the upstream producers
+* Kafka Streams sets the internal embedded producer client with a transaction id to enable the idempotence and transactional messaging features, and also sets    its consumer client with the `read_committed` mode to only fetch messages from committed transactions from the upstream producers
 
 ### Quota
 
@@ -346,10 +346,8 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 * Tuning for durability -
   * `default.replication.factor = 3`
 * **Message Size**
-  * `message.max.bytes` defaults to 1MB
-  * `message.max.bytes` indicates the compressed message size
+  * `message.max.bytes` - limits the size of a single message batch
   * `max.partition.fetch.bytes` (consumer) & `replica.fetch.max.bytes` must match with `message.max.bytes`
-  * Larger `message.max.bytes` will impact disk I/O throughput
   * `compression.type` - Accepts the standard compression codecs ('gzip', 'snappy', 'lz4', 'zstd'). It additionally accepts 'uncompressed' which is equivalent    to no compression; and 'producer' which means retain the original compression codec set by the producer
   * `lz4` is the fastest among the compression algorithms (around 800 mbps)
 
@@ -357,8 +355,8 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 
 * `KafkaProducer<K,V>` is thread safe and sharing a single producer instance across threads will generally be faster than having multiple instances
 * The `send()` method is asynchronous. When called it adds the record to a buffer of pending record sends and immediately returns
-* The producer maintains buffers of unsent records for each partition. These buffers are of a size specified by the `batch.size config`
-* If the buffer is full or metadat is not available, the `send()` method blocks for `max.block.ms` and throws a `TimeoutException` after that
+* The producer maintains buffers of unsent records for each partition. These buffers are of a size specified by the `batch.size` config
+* If the buffer is full or metadata is not available, the `send()` method blocks for `max.block.ms` and throws a `TimeoutException` after that
 * **Message Reliability (Typical Scenario)**
   * **Producer Config**
     ```
@@ -405,6 +403,8 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
   * Message is durable
   * Latency is high
 * `buffer.memory` - The memory buffer that will store the messages before being sent out to a broker. If the buffer runs out of space, the thread will remain     blocked for `max.block.ms` before throwing an exception. This setting should correspond roughly to the total memory the producer will use, but is not a hard    bound since not all memory the producer uses is used for buffering. Some additional memory will be used for compression (if compression is enabled) as well     as for maintaining in-flight requests
+* Requests sent to brokers will contain multiple batches, one for each partition with data available to be sent
+* `max.request.size` - The maximum size of a request in bytes. This setting will limit the number of record batches the producer will send in a single request to avoid sending huge requests. This is also effectively a cap on the maximum record batch size
 * `compression.type` - By default messages are uncompressed. Supported compression algorithms - `gzip`, `snappy`, `lz4` and `zstd`
 * `client.id` - This can be any string, and will be used by the brokers to identify messages sent from the client. It is used in logging and metrics, and for quotas
 * In 2.4.0 release, the DefaultPartitioner now uses a sticky partitioning strategy. This means that records for specific topic with null keys and no assigned     partition will be sent to the same partition until the batch is ready to be sent. When a new batch is created, a new partition is chosen. This decreases        latency to produce, but it may result in uneven distribution of records across partitions in edge cases
@@ -441,7 +441,8 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
   * `bootstrap.servers`
   * `group.id` - A unique string that identifies the consumer group this consumer belongs to. This property is required if the consumer uses either the group     management functionality by using subscribe(topic) or the Kafka-based offset management strategy
   * `heartbeat.interval.ms` - The expected time between heartbeats to the consumer coordinator when using Kafka's group management facilities. Heartbeats are     used to ensure that the consumer's session stays active and to facilitate rebalancing when new consumers join or leave the group. The value must be set       lower than `session.timeout.ms`, but typically should be set no higher than 1/3 of that value. It can be adjusted even lower to control the expected time     for normal rebalances
-  * `max.partition.fetch.bytes` - The maximum amount of data per-partition the server will return. Records are fetched in batches by the consumer. If the first   record batch in the first non-empty partition of the fetch is larger than this limit, the batch will still be returned to ensure that the consumer can make   progress. The maximum record batch size accepted by the broker is defined via `message.max.bytes` (broker config) or `max.message.bytes` (topic config)
+  * `max.partition.fetch.bytes` - The maximum amount of data per-partition the server will return. Records are fetched in batches by the consumer. The maximum record batch size accepted by the broker is defined via `message.max.bytes` (broker config) or `max.message.bytes` (topic config)
+  * `fetch.max.bytes` - The maximum amount of data the server should return for a fetch request
   * `session.timeout.ms` - The timeout used to detect client failures when using Kafka's group management facility. The client sends periodic heartbeats to       indicate its liveness to the broker. If no heartbeats are received by the broker before the expiration of this session timeout, then the broker will remove   this client from the group and initiate a rebalance. Note that the value must be in the allowable range as configured in the broker configuration by          `group.min.session.timeout.ms` and `group.max.session.timeout.ms`
   * `allow.auto.create.topics` - Should be set to false in production as there is no way to validate topic name
   * `auto.offset.reset` - What to do when there is no initial offset in Kafka or if the current offset does not exist any more on the server (e.g. because that   data has been deleted). Default value is `latest`
@@ -554,7 +555,7 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
   * CREATE TABLE AS SELECT (CTAS)
 * The CSAS and CTAS statements occupy both categories, because they perform both a metadata change, like adding a stream, and they manipulate data, by creating   a derivative of existing records
 * In headless mode, KSQL stores metadata in the config topic
-* In interactive mode, KSQL stores metatada in and builds metadata ifrom the KSQL command topic. To secure the metadata, you must secure the command topic
+* In interactive mode, KSQL stores metatada in and builds metadata from the KSQL command topic. To secure the metadata, you must secure the command topic
 * SHOW STREAMS and EXPLAIN <query> statements run against the KSQL server that the KSQL client is connected to. They don’t communicate directly with Kafka
 * CREATE STREAM WITH <topic> and CREATE TABLE WITH <topic> write metadata to the KSQL command topic
 * Non-persistent queries based on SELECT that are stateless only read from Kafka topics, for example SELECT … FROM foo WHERE ….
