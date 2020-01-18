@@ -47,6 +47,7 @@
   - [ZooKeeper Basics](#zooKeeper-basics)
 
   - [Avro Basics](#avro-basics)
+- [Kafka Setup in Windows 10 Home Edition](#kafka-setup-in-windows-10-home-edition)
 
 - [References](#references)
 
@@ -883,6 +884,39 @@ bin\windows\kafka-console-consumer.bat ^
 * Enum attributes
   * name, namespace, aliases, doc, symbols
 
+### Zookeeper Shell
+
+```
+bin\windows\zookeeper-shell.bat localhost:2181
+
+REM List brokers
+ls /brokers/topics
+
+REM List topics
+ls /brokers/topics
+
+REM List partitions
+ls /brokers/topics/<topic_name>/partitions
+
+REM List dynamic config
+ls /config/topics/<topic_name>
+
+REM Find the controller broker
+get /controller
+
+REM Find the partition assignments to brokers
+get /brokers/topics/<topic_name>
+
+REM Find broker listener & port details
+get /brokers/ids/<broker_id>
+
+REM Find partition leader and ISR
+get /brokers/topics/<topic_name>/partitions/<partition_id>/state
+
+REM Find all replica locations
+get /brokers/topics/<topic_name>
+
+```
 
 ## References
 
