@@ -927,6 +927,19 @@ get /brokers/topics/<topic_name>
 
 ```
 
+### Operations & Troubleshooting
+
+* **Logging** -
+  * `server.log`
+  * `controller.log` - ERROR, FATAL & WARN messages need to be looked at
+  * `state-change.log`
+* **Rolling Restart**
+  * Run the brokers with `controlled.shutdown.enable=true`
+  * Ensure the server is healthy with no under replicated partition
+  * Identify the Controller broker. It should be the last one to shutdown
+  * Login to one broker server and run `bin/kafka-server-stop`
+  * Restart the server using `bin/kafka-server-start etc/kafka/server.properties` and wait until it catches up before stopping the next broker
+
 ## References
 
 ### Books
