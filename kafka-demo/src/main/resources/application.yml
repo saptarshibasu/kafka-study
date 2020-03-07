@@ -1,0 +1,37 @@
+kafka:
+  producer-params:
+    bootstrap.servers: 127.0.0.1:9092
+    key.serializer: org.apache.kafka.common.serialization.StringSerializer
+    value.serializer: io.confluent.kafka.serializers.KafkaAvroSerializer
+    acks: all
+    enable.idempotence: true
+    max.in.flight.requests.per.connection: 5
+    # Default value
+    buffer.memory: 33554432
+    compression.type: zstd
+    # Let it be a high value. Actual number of retries will be controlled by delivery.timeout.ms
+    retries: 1000
+    # Default value
+    batch.size: 16384
+    client.id: kafka-producer
+    # Default value
+    connections.max.idle.ms: 540000
+    # Default value
+    delivery.timeout.ms: 120000
+    # Default value. Tuned for low latency
+    linger.ms: 0
+    # Default value
+    max.block.ms: 60000
+    # Default value
+    max.request.size: 1048576
+    schema.registry.url: http://127.0.0.1:8081
+
+common:
+  thread-pool:
+    core-pool-size: 10
+    maximum-pool-size: 15
+    keep-alive-time-minutes: 15
+    bounded-queue-capacity: 20
+
+employee:
+  topic: employee

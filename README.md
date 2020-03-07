@@ -892,6 +892,23 @@ bin\windows\kafka-console-consumer.bat ^
   * name, namespace, doc, aliases, type, fields
 * Enum attributes
   * name, namespace, aliases, doc, symbols
+* Enums once defined cannot be changed. Otherwise, the compatibility will break
+* Arrays are a way to define an unbounded list of items
+
+```
+{"type": "array", "items": "string"}
+```
+
+* Unions can allow a field value to take different types. One common use case is to define an optional value:
+
+```
+{"name": "middle_name", "type": {"null", "string"}, "default": null}
+```
+* Maps are a way to define a list of keys and values, where the keys are strings
+
+```
+{"type": "map", "values": "string"}
+```
 
 ### Zookeeper Shell
 
