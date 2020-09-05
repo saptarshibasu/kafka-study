@@ -1,6 +1,6 @@
 # Kafka Study
 
-**Kafka Latest Version - 2.4.0**
+**Kafka Latest Version - 2.6.0**
 
 - [Kafka Basics](#kafka-basics)
 
@@ -57,8 +57,8 @@
 
 ### What Why of Kafka
 
-* Kafka originally designed as a message queue has developed into a distributed streaming platform. It is based on a **distributed, partitioned, replicated**     log
-* As a messaging system, what makes Kafka different from the traditional messaging systems is its log centric design which makes it suitable for use cases that    cannot be so easily and elegantly addressed with other messaging systems
+* Kafka originally designed as a message queue has developed into a distributed streaming platform. It is based on a **distributed, partitioned, replicated** log
+* As a messaging system, what makes Kafka different from the traditional messaging systems is its log centric design which makes it suitable for use cases that cannot be so easily and elegantly addressed with other messaging systems
   * **Developing applications optimized for both read and write** - Kafka allows capturing application data as a time ordered series of immutable events which can then be processed by different consumer processes to produce various read optimized views. Thus, while writes are efficient appends, reads are from read-optimized pre-aggregated denormalized views updated in near-real time. This pattern of developing applications where the read and write models are decoupled is also known as **Command Query Responsibility Seggregation (CQRS)** and we implement it using another pattern called **Event Sourcing** which requires the data to be captured as an ordered series of immutable events (as opposed to a state machine) to ensure that the historical information is preserved and the exact state of the application at any point in the past can be deterministically created by replaying the events
   * **Replacing dual-writes with log based writes** - Applications writing to multiple systems (viz. search index, database, cache, hadoop etc.) can suffer from race condition and partial failure leading to perpetually inconsistent data. Applications can instead write to Kafka and then have the individual systems consume the ordered event stream from Kafka to create their internal state in a deteministic way. In a UI based application, where the user expects a response almost immediately in a synchronous manner, there are couple of options -
     * **Change Data Capture** - Applications write directly to the database which can then source an event stream from the DB **Write Ahead Log (WAL)** to Kafka via Kafka Connect. Kafka Stream or Producer API can then be used to prepare the respective system views in separate Kafka topics from the original stream of events and finally export them to the individual systems using Kafka Connect or Kafka Consumer API
@@ -71,9 +71,9 @@
   * Kafka's durability using distributed replicated partitions allows it to serve as a single source of truth
   * Kafka's compaction cleaning policy allows it to store compacted data for an indefinite period of time
   * Kafka Connect API makes it easy to import/export data from or to other systems
-  * Kafka Streamimg API allows processing event stream with advanced joining & windowing primitives
+  * Kafka Streamimg API allows processing event stream/s with advanced joining & windowing primitives
   * Kafka's consumer groups allow both queue (load balancing across consumer processes) and publish-subscribe (multiple consumer groups) at the same time
-  * Kafka's zero copy, page cache leverage, message batching, smaller heap and sequential disk access provide good performance
+  * Kafka's zero copy, page cache leverage, message batching, smaller heap, and sequential disk access provide good performance
   * Kafka's performance is effectively constant with respect to data size so storing data for a long time is not a problem
   * Kafka's consumers keep track of their progress in separate internal Kafka topics adding very little overhead to the brokers
   * Kafka supports space efficient publish-subscribe as there is only single log no matter how many consumer groups are there
@@ -90,17 +90,18 @@
   * Serve as a unit of parallelism
 * Producers and Consumers are Kafka clients
 * A message in kafka is a key-value pair with a small amount of associated metadata
-* A message set is a group of messages and is the unit of compression
+* A message set (at the internal protocol level) is a group of messages stored (on disk) and transfered (from producer to broker and broker to consumer) together to reduce network roundtrips and many small I/Os. It is the unit of compression
 * The broker always decompresses the batch to validate
 * Kafka only provides a total order over records within a partition, not between different partitions in a topic
-* As Kafka writes its data to local disk, the data may linger in the filesystem cache and may not make its way to the disk. The disk flush parameter are not      recommended to set for performance reasons. Therefore Kafka relies solely on replication for reliability and durability
-* In Linux, data written to the filesystem is maintained in the pagecache until it must be written out to disk (due to an application-level fsync or the OS's         ownflush policy)
+* As Kafka writes its data to local disk, the data may linger in the filesystem cache and may not make its way to the disk. The disk flush parameter are not recommended to set for performance reasons. Therefore Kafka relies solely on replication for reliability and durability
+* In Linux, data written to the filesystem is maintained in the pagecache until it must be written out to disk (due to an application-level fsync or the OS's own flush policy)
 * **Kafka Guarantees**
   * Kafka provides order guarantee of messages in a partition
-  * Produced messages are considered "committed" when they are written to the partition on all its in-sync replicas
+  * Produced messages are considered "committed" when they are written to the partition on all its in-sync replicas (ISR)
   * Messages that are committed will not be lost as long as at least one replica remains alive
   * Consumers can only read messages that are committed
 * **ZooKeeper holds**
+  * *The upcoming Apache Kafka 3.0 will remove the dependency of Zookeeper. The proposed architecture will use a quorum of controller brokers to elect an active cotroller. The active controller will be elected using a Raft based algorithm. The design looks similar to Elasticsearch master eligible nodes. The metadata is going to be stored in Kafka topic and all other brokers will pull the metadata from the active controller*
   * Dynamic per-broker or cluster-wide default config (includes encrypted passwords where secrets used for encoding password is kept in server.properties)
   * Client quota configuration
   * Brokers register themselves in ZooKeeper using ephemeral znodes
@@ -115,8 +116,8 @@
 * **Shutdown** - When a server is stopped gracefully it has two optimizations it will take advantage of:
   * It will sync all its logs to disk to avoid needing to do any log recovery when it restarts (i.e. validating the checksum for all messages in the tail of the log). Log recovery takes time so this speeds up intentional restarts
   * It will migrate any partitions the server is the leader for to other replicas prior to shutting down. This will make the leadership transfer faster and minimize the time each partition is unavailable to a few milliseconds
-* Syncing the logs will happen automatically whenever the server is stopped other than by a hard kill, but the controlled leadership migration requires using a   special setting: `controlled.shutdown.enable=true`
-* Note that controlled shutdown will only succeed if all the partitions hosted on the broker have replicas (i.e. the replication factor is greater than 1 and     at least one of these replicas is alive)
+* Syncing the logs will happen automatically whenever the server is stopped other than by a hard kill, but the controlled leadership migration requires using a special setting: `controlled.shutdown.enable=true`
+* Note that controlled shutdown will only succeed if all the partitions hosted on the broker have replicas (i.e. the replication factor is greater than 1 and at least one of these replicas is alive) - Replication factor 1 (minimum possible value) indicates there is only one copy of data in the cluster
 * Default ports
   * Zookeeper: 2181
   * Zookeeper Election Port (Peer port) 2888
@@ -125,30 +126,34 @@
   * Schema Registry: 8081
   * REST Proxy: 8082
   * KSQL: 8088
-* Prior to release 2.4.0, the records with null keys will be distrubuted across partitions in a round-robin manner
+* Prior to release 2.4.0, the records with null keys will be distrubuted across partitions in a round-robin manner. The `DefaultPartitioner` now uses a sticky partitioning strategy. This means that records for specific topic with null keys and no assigned partition will be sent to the same partition until the batch is ready to be sent. When a new batch is created, a new partition is chosen
 * **Rack Awareness** -
-  * `broker.rack` - If set for a broker, the replicas will be placed to ensure all replicas are not on the same rack. Useful when the brokers are spread across    datacenters or AZ in AWS within the same region
-  * `client.rack` - Release 2.4.0 onwards, it allows the consumer to fetch from a follower replica on the same rack, if the partion leader is not available on the same rack. There may be, however, some latency
+  * `broker.rack` - If set for a broker, the replicas will be placed to ensure all replicas are not on the same rack. Useful when the brokers are spread across datacenters or AZ in AWS within the same region
+  * `client.rack` - Release 2.4.0 onwards, it allows the consumer to fetch from a follower replica on the same rack, if the partion leader is not available on the same rack. There may be, however, some latency if the follower cannot keep up with the partition leader
 
 ### Performance
 
-* Modern operating systems are designed to aggressively use the available memory as page cache. Thus if the server hosting Kafka broker is not used for other     applications, more page cache will be available for Kafka
-* When consumers are lagging only a little from the producer, the broker doesn't need to reread the messages from the disk. The requests can be served directly   from the page cache
-* Using pagecache has several advantages over an in-process cache for storing data that will be written out to disk:
+* Modern operating systems are designed to aggressively use the available memory as page cache. Thus if the server hosting Kafka broker is not used for other applications, more page cache will be available for Kafka
+* When consumers are lagging only a little from the producer, the broker doesn't need to reread the messages from the disk. The requests can be served directly from the page cache
+* Using page cache has several advantages over an in-process cache for storing data that will be written out to disk:
   * The I/O scheduler will batch together consecutive small writes into bigger physical writes which improves throughput
   * The I/O scheduler will attempt to re-sequence writes to minimize movement of the disk head which improves throughput
   * It automatically uses all the free memory on the machine
 * Compact byte structure rather than Java objects reduces Java Object ovehead
 * Not having an in-process cache for messages makes more memory available for page cache & reduces garbage collection issues with increased in-heap data
 * Simple reads and appends to file result in sequential disk access
-* Transfer batches of messages over the network to amortize the network roundtrip, do larger sequential disk access, allocate contiguous memory blocks, provide   good compression ratio
+* Transfer batches of messages over the network to 
+  * amortize the network roundtrip
+  * do larger sequential disk access
+  * allocate contiguous memory blocks
+  * provide good compression ratio
 * Zero-copy - `sendfile` system call of Linux reduces byte copying (across kernel and user spaces) and context switches
 * Standardized binary format shared by producer, broker & consumer reduces recopying & transformation
 * Compression of message batch saves network bandwidth
 * No intervening routing tier. Messages of a given partition are sent directly to the partition leader
 * Consumers use "long poll" to avoid busy waiting and ensure larger transfer sizes
 
-Note: Application level flushing (fsync) gives less leeway to the OS to optimize the writes. The Linux fsync implementation blocks all writes to the file, whereas the OS level flushing makes more granular level locks
+Note: Application level flushing (`fsync`) gives less leeway to the OS to optimize the writes. The Linux fsync implementation blocks all writes to the file, whereas the OS level flushing makes more granular level locks
 
 ### Replication
 
@@ -157,25 +162,25 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 * Replication factor must be less than or equal to the number of brokers up and running
 * Kafka recommends using replication for durability and not set the disk flush parameters
 * Each partition has a leader replica
-* All producer & consumer requests go through the leader replica to guarantee consistency
+* All producer & consumer requests go through the leader replica to guarantee consistency (Starting from 2.4.0, there may be an exception for consumers when `client.rack` is set)
 * Leaders keep track of the last offsets fetched by each replica
 * For each partition, Kafka stores in Zookeeper the current leader and the current In-sync replicas (ISR)
 * Preferred leader - The replica that was the leader when the topic was originally created
 * When the preferred leader is indeed the leader, the load is expected to be more evenly distributed among the brokers
-* By default, Kafka is configured with `auto.leader.rebalance.enable=true`, which will check if the preferred leader replica the current leader. If not and if    it is ISR, a leader election will be triggered to make the preferred leader the current leader
+* By default, Kafka is configured with `auto.leader.rebalance.enable=true`, which will check if the preferred leader replica the current leader. If not and if it is ISR, a leader election will be triggered to make the preferred leader the current leader
 * All other replicas (other than the leader replica) are followers
 * In the event of leader replica failure, one of the follower replicas will be promoted as leader
-* If the leader replica detects that a follower has fallen behind significantly or is not available, it removes the follower from the ISR. Thus it is possible    to have only one ISR (the leader itself) and the producer writing to it effectively without durability (unless the `min.insync.replicas` is set to a value >    1)
-* Only in-sync replicas are eligible to be elected as leader in the event of leader failure unless `unclean.leader.election.enable` is set to true
+* If the leader replica detects that a follower has fallen behind significantly or is not available, it removes the follower from the ISR. Thus it is possible to have only one ISR (the leader itself) and the producer writing to it effectively without durability (unless the `min.insync.replicas` is set to a value `> 1`)
+* Only in-sync replicas are eligible to be elected as leader in the event of leader failure unless `unclean.leader.election.enable` is set to `true`
 * Every replica maintains some important offset positions
-  * HW (High Water Mark) - Offset of the last committed message
-  * LEO (Log End Offset) - Tail of the log
+  * **HW (High Water Mark)** - Offset of the last committed message
+  * **LEO (Log End Offset)** - Tail of the log
 * Conditions for ISR
-  * It has sent a heartbeat to Zookeeper in last 6 seconds
-  * It has requested message from the leader within last 10 seconds (`replica.lag.time.max.ms`)
-  * It has fetched the LEO from the leader in the last 10 seconds (`replica.lag.time.max.ms`)
+  * It has sent a heartbeat to Zookeeper in last `18` seconds
+  * It has requested message from the leader within last `30` seconds (`replica.lag.time.max.ms`)
+  * It has fetched the LEO from the leader in the last `30` seconds (`replica.lag.time.max.ms`)
 * Followers don't serve client request (until recently when consumers can fetch from followers if the leader is not available in the same rack). Their only job is to replicate messages from the leader and stay in sync with the leader
-* Each follower constantly pulls new messages from the leader using a single socket channel. That way, the follower receives all messages in the same order as    written in the leader
+* Each follower constantly pulls new messages from the leader using a single socket channel. That way, the follower receives all messages in the same order as written in the leader
 * A message is considered committed when all the ISR have been updated
 * Consumers don't see uncommitted messages regardless of the `acks` setting which affects only the acknowledgement to the producer
 * **Replication flow** 
@@ -191,25 +196,25 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
   * the leader sends an acknowledgment to the client (depending on producer `acks` parameter)
 * Leader replica shares its HW to the followers by piggybacking the value with the return value of the fetch requests from the followers
 * From time to time, followers checkpoint their HW to its local disk (`replica.high.watermark.checkpoint.interval.ms`)
-* When a follower comes back after failure, it truncates all the logs after the last check pointed HW and then reads all the logs from the leader after the       given HW
+* When a follower comes back after failure, it truncates all the logs after the last check pointed HW and then reads all the logs from the leader after the given HW
 * When a partition leader fails, the new leader chooses its LEO as HW (Follower LEO is usually behind leader HW)
-* When a new partition leader is elected, the followers truncate their logs after the last check pointed HW and then read all the logs from the new leader        after the given HW
-* The new partition leader (before making it available for reads and writes by clients) waits until all the surviving ISR have caught up or a configured period   has passed
+* When a new partition leader is elected, the followers truncate their logs after the last check pointed HW and then read all the logs from the new leader after the given HW
+* The new partition leader (before making it available for reads and writes by clients) waits until all the surviving ISR have caught up or a configured period has passed
 * **Controller** is a broker that is responsible for electing partition leader (in addition to regular broker responsibilities)
   * The first broker that starts in the cluster will become the controller
   * If the controller goes down, another broker will become the controller with a higher epoch number and thus preventing "split brain" from occuring
 * **Client**
-  * Must send the fetch requests to the leader replica of a given partition (otherwise "Not a leader" error is returned)
+  * Must send the fetch requests to the leader replica of a given partition (otherwise "Not a leader" error is returned) (except the `client.rack` scenario mentioned above)
   * Knows about the leader replica and broker details for a given topic using metadata requests
   * Caches the metadata information
   * Fetches metadata information when `metadata.max.age.ms` expires or "Not a leader" error is returned (partition leader moved to a different broker due to failure)
   * Metadata requests can be sent to any broker because all brokers cache this information
 * If all the replicas crash, the data that is committed but not written to the disk are lost
-* Kafka MirrorMaker provides geo-replication support for your clusters. With MirrorMaker, messages are replicated across multiple datacenters or cloud regions.   You can use this in active/passive scenarios for backup and recovery; or in active/active scenarios to place data closer to your users, or support data         locality requirements
-* To support fetching from the follower replica (because the partition leader is not available on the same rack) based on HW, Kafka leader doesn't delay          responding to replica fetch requests if the follower has obsolete HW
+* Kafka MirrorMaker provides geo-replication support for your clusters. With MirrorMaker, messages are replicated across multiple datacenters or cloud regions. You can use this in active/passive scenarios for backup and recovery; or in active/active scenarios to place data closer to your users, or support data locality requirements
+* To support fetching from the follower replica (because the partition leader is not available on the same rack) based on HW, Kafka leader doesn't delay responding to replica fetch requests if the follower has obsolete HW
 * ~~If a replica constantly drops out of and rejoins ISR, you may need to increase `replica.lag.max.messages`~~ Removed in release 0.9.0
-* If a replica stays out of ISR for a long time, it may indicate that the follower is not able to fetch data as fast as data is accumulated at the leader. You    can increase the follower’s fetch throughput by setting a larger value for `num.replica.fetchers`
-* `replica.lag.time.max.ms` - This is typically set to a value that reliably detects the failure of a broker for the purpose of moving it out of ISR. If the      metric `MinFetchRate` is `n`, set the value for this config to larger than `1/n * 1000`
+* If a replica stays out of ISR for a long time, it may indicate that the follower is not able to fetch data as fast as data is accumulated at the leader. You can increase the follower’s fetch throughput by setting a larger value for `num.replica.fetchers`
+* `replica.lag.time.max.ms` - This is typically set to a value that reliably detects the failure of a broker for the purpose of moving it out of ISR. If the metric `MinFetchRate` is `n`, set the value for this config to larger than `1/n * 1000`
 
 ### Retention 
 
@@ -221,8 +226,8 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
     * File handle to the segment file
     * File handle to the offset index of the segment file
     * File handle to the time index of the segment file (introduced in release 0.10.1.0)
-  * Offset index contains a mapping between a relative message offset (within the segment) and the corresponding physical location in the segment file. This      allows Kafka to quickly lookup a given offset in a segment file
-  * Time index contains a mapping between a relative message offset (within the segment) and the corresponding message time (LogAppendTime or CreateTime          depending on `log.message.timestamp.type` - broker/topic configuration). The following functionalities will refer to the time index
+  * Offset index contains a mapping between a relative message offset (within the segment) and the corresponding physical location in the segment file. This allows Kafka to quickly lookup a given offset in a segment file
+  * Time index contains a mapping between a relative message offset (within the segment) and the corresponding message time (LogAppendTime or CreateTime depending on `log.message.timestamp.type` - broker/topic configuration). The following functionalities will refer to the time index
     * Search based on timestamp
     * Time based retention
     * Time based rotation
@@ -343,7 +348,7 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 
 * `auto.create.topics.enable` - Default value is true. It should be set to false in production as there is no way to validate the topic names
 * Tuning for Throughput
-  * `compression.type = producer` (default value) - The broker will uncompress the batch to validate and then send the compressed message from producer           directly to the consumer
+  * `compression.type = producer` (default value) - The broker will decompress the batch to validate and then send the compressed message from producer directly to the consumer
 * Tuning for latency
   * `num.replica.fetchers` - Number of fetcher threads per broker. The threads are used to replicate the messages. Many partitions increase the latency as by      default there is only one thread per broker to do fetching from the leader broker for replication
 * Tuning for durability -
@@ -351,7 +356,7 @@ Note: Application level flushing (fsync) gives less leeway to the OS to optimize
 * **Message Size**
   * `message.max.bytes` - limits the size of a single message batch
   * `max.partition.fetch.bytes` (consumer) & `replica.fetch.max.bytes` must be as large as `message.max.bytes`
-  * `compression.type` - Accepts the standard compression codecs ('gzip', 'snappy', 'lz4', 'zstd'). It additionally accepts 'uncompressed' which is equivalent    to no compression; and 'producer' which means retain the original compression codec set by the producer
+  * `compression.type` - Accepts the standard compression codecs ('gzip', 'snappy', 'lz4', 'zstd'). It additionally accepts 'uncompressed' which is equivalent to no compression; and 'producer' which means retain the original compression codec set by the producer
   * `lz4` is the fastest among the compression algorithms (around 800 mbps)
 
 ## Kafka Producers
