@@ -250,7 +250,7 @@ Note: Application level flushing (`fsync`) gives less leeway to the OS to optimi
 
 * `log.cleanup.policy = compact`
 * Kafka will always retain at least the last known value for each message key within the log of data for a single topic partition
-* It serves use cases to restore a system or pre-warm a cache after a crash. Essentially it serves the use cases that needs the latest values for the complete   set of keys rather than the most recent changes
+* It serves use cases to restore a system or pre-warm a cache after a crash. Essentially it serves the use cases that needs the latest values for the complete set of keys rather than the most recent changes
 * Compaction is useful to implement event sourcing or materialized view pattern
 * The original offset of the messages are not changed
 * Compaction also allows for deletes. A message with a key and a null payload will be treated as a delete from the log
@@ -264,10 +264,10 @@ Note: Application level flushing (`fsync`) gives less leeway to the OS to optimi
 
 ### Rebalancing Consumer Groups
 
-* Rebalancing is the process where a group of consumer instances (belonging to the same group) co-ordinate to own a mutually exclusive set of partitions of       topics that the group has subscribed to
+* Rebalancing is the process where a group of consumer instances (belonging to the same group) co-ordinate to own a mutually exclusive set of partitions of topics that the group has subscribed to
 * Every partition for all subscribed topics will be owned by a single consumer instance
 * One of the brokers is elected as the coordinator for a subset of the consumer groups
-* Co-ordinator role
+* **Co-ordinator role**
   * Triggering rebalancing whenever required (new members connect with co-ordinator, failed consumers are identified by failure detection run by the co-ordinator)
   * Communicating the resulting partition-consumer ownership configuration to all consumers of the group undergoing a rebalance operation
 * Essentially, a rebalance kicks in when following conditions are met:
@@ -286,30 +286,31 @@ Note: Application level flushing (`fsync`) gives less leeway to the OS to optimi
     * Co-ordinator responds back with the assignment information
   * Stable
 * Static membership with `group.instance.id` so that the same set of partitions are assigned back to the member after temporary network partitioning (within `session.timeout`) without a fresh rebalancing
-* Release 2.4.0 onwards, incremental rebalance protocol tries to minimize the partition migration and let the consumers retain their partitions during            rebalancing
+* Release 2.4.0 onwards, incremental rebalance protocol tries to minimize the partition migration and let the consumers retain their partitions during rebalancing
+* Consumers should provide an implementation of `ConsumerRebalanceListener` to commit the offsets in Kafka and / or external store before the partitions are revoked
 
 
 ### Delivery Symantics
 
 * Exactly once semantic was introduced in version 0.11 with support from the following features
-  * idempotence - `enable.idempotence` (broker config)
+  * idempotence - `enable.idempotence` (producer config)
   * transaction - `transactional.id` (producer config)
 * Kafka supports
-  * At most once — Messages may be lost but are never redelivered
-  * At least once — Messages are never lost but may be redelivered
-  * Exactly once — this is what people actually want, each message is delivered once and only once
+  * **At most once** — Messages may be lost but are never redelivered
+  * **At least once** — Messages are never lost but may be redelivered
+  * **Exactly once** — this is what people actually want, each message is delivered once and only once
 * Producer Perspective
   * At most once - No retry if successful response from broker is not received (`retries = 0`)
   * At least once - If no success response received from broker, retry again (`retries = Integer.MAX_VALUE`, `delivery.timeout.ms = 120000`)
   * Exactly once - 
     * `retries = Integer.MAX_VALUE`, `delivery.timeout.ms = 120000`, `enable.idempotence = true`
-    * Broker assigns each new producer a unique id (PID) and keeps a sequence number per partition that starts from 0 and increments with each message sent
+    * Broker assigns each new producer a unique id (PID) and keeps a sequence number per partition that starts from 0 and increments with each message sent (If `transactional.id` is specified, an epoch is also maintained against the PID to fence off multiple producers with the same PID and transaction id)
     * Relying on the in-order property of Kafka (and TCP), the broker will only keep track of the highest sequence number seen and reject any sequence number which is not exacly 1 higher than the last seen number
     * Messages with a lower sequence number result in a duplicate error, which can be ignored by the producer
     * Messages with a higher number result in an out-of-sequence error, which indicates that some messages have been lost, and is fatal
     * The PID, producer epoch and the first sequence number within the set will be stored at the message set level to reduce the overhead at message level
     * Since each new instance of a producer is assigned a new unique PID, we can only guarantee idempotent production within a single producer session
-    * Producers lease PIDs for a fixed duration of time from the co-ordinator broker to ensure that the brokers don't go out-of-memory to keep track of all PIDs
+    * Producers lease PIDs for a fixed duration of time from the transaction co-ordinator broker to ensure that the brokers don't go out-of-memory to keep track of all PIDs
 * Consumer Perspective
   * At most once - `enable.auto.commit` commits the offset even before the messages were processed
   * At least once - The writes to the down stream system when retried without the offsets
@@ -321,8 +322,16 @@ Note: Application level flushing (`fsync`) gives less leeway to the OS to optimi
 * Transaction expiry is configured using - `transactional.id.expiration.ms`
 * Kafka default `isolation.level` is `read_uncommitted`
 * `read_uncommitted` - consume both committed and uncommitted messages in offset ordering.
-* `read_committed` - Only consume non-transactional messages or committed transactional messages in offset order. The end offset of a partition for a             read_committed consumer would be the offset of the first message in the partition belonging to an open transaction. This offset is known as the 'Last Stable    Offset'(LSO)
-* Kafka Streams sets the internal embedded producer client with a transaction id to enable the idempotence and transactional messaging features, and also sets    its consumer client with the `read_committed` mode to only fetch messages from committed transactions from the upstream producers
+* `read_committed` - Only consume non-transactional messages or committed transactional messages in offset order. The end offset of a partition for a read_committed consumer would be the offset of the first message in the partition belonging to an open transaction. This offset is known as the **Last Stable Offset (LSO)**
+* Kafka Streams API sets the internal embedded producer client with a transaction id to enable the idempotence and transactional messaging features, and also sets its consumer client with the `read_committed` mode to only fetch messages from committed transactions from the upstream producers
+* The components introduced with the transactions API in Kafka 0.11.0 are the **Transaction Coordinator** and the **Transaction Log**
+* Every broker is a leader for certain number of partitions of the transaction log
+* Every transactional.id is mapped to a specific partition of the transaction log through a simple hashing function. Therefore, the leader of this partition becomes the transaction co-ordinator of the given transaction id
+* A transactional id is mapped one-to-one with a producer id or PID, but the difference is producer id is auto generated by the broker while the transactional id is provided by the application owner allowing the recovery of a transaction across application restart
+* An epoch is maintained along with the producer id. If an application is restarted with a transaction id, the epoch is incremented to fence off any other producer instances running with the save producer id
+* The broker only allows a producer with a recognized producer ID and the current epoch for that producer ID to write or commit data
+* The transaction co-ordinator is the 2-phase commit arbitrator. However, due to the replication and partition leader election functionalities of Kafka, this 2-phase commit does not suffer from the shortcomings of the traditional 2-phase commit
+* A transaction could be in various states like "Ongoing", "Prepare commit", and "Completed". It is this state and associated metadata that is stored in the transaction log
 
 ### Quota
 
@@ -350,7 +359,7 @@ Note: Application level flushing (`fsync`) gives less leeway to the OS to optimi
 * Tuning for Throughput
   * `compression.type = producer` (default value) - The broker will decompress the batch to validate and then send the compressed message from producer directly to the consumer
 * Tuning for latency
-  * `num.replica.fetchers` - Number of fetcher threads per broker. The threads are used to replicate the messages. Many partitions increase the latency as by      default there is only one thread per broker to do fetching from the leader broker for replication
+  * `num.replica.fetchers` - Number of fetcher threads per broker. The threads are used to replicate the messages. Many partitions increase the latency as by default there is only one thread per broker to do fetching from the leader broker for replication
 * Tuning for durability -
   * `default.replication.factor = 3`
 * **Message Size**
@@ -422,16 +431,16 @@ Note: Application level flushing (`fsync`) gives less leeway to the OS to optimi
 * `max.request.size` - The maximum size of a request in bytes. This setting will limit the number of record batches the producer will send in a single request to avoid sending huge requests. This is also effectively a cap on the maximum record batch size. It should not be larger than the broker setting `message.max.bytes` or topic setting `max.message.bytes`
 * `compression.type` - By default messages are uncompressed. Supported compression algorithms - `gzip`, `snappy`, `lz4` and `zstd`
 * `client.id` - This can be any string, and will be used by the brokers to identify messages sent from the client. It is used in logging and metrics, and for quotas
-* In 2.4.0 release, the DefaultPartitioner now uses a sticky partitioning strategy. This means that records for specific topic with null keys and no assigned     partition will be sent to the same partition until the batch is ready to be sent. When a new batch is created, a new partition is chosen. This decreases        latency to produce, but it may result in uneven distribution of records across partitions in edge cases
+* In 2.4.0 release, the DefaultPartitioner now uses a sticky partitioning strategy. This means that records for specific topic with null keys and no assigned partition will be sent to the same partition until the batch is ready to be sent. When a new batch is created, a new partition is chosen. This decreases latency to produce, but it may result in uneven distribution of records across partitions in edge cases
 * Tuning for throughput
-  * `acks = 1` (default value) - The leader broker will send the acknowledge as soon as it has writtent the record in int local log. The acknowledgement will     not wait for the replicas to write the record in their logs. The tradeoff is less durability.
+  * `acks = 1` (default value) - The leader broker will send the acknowledge as soon as it has writtent the record in int local log. The acknowledgement will not wait for the replicas to write the record in their logs. The tradeoff is less durability.
   * `compression.type = lz4`
-  * `batch.size` - The records for a given partition are usually sent in batches to amortize the network roundtrip, improve compression ratio and reduce the      load of processing messages in producer and broker. The batch will not be sent to the broker until the `batch.size` is full or `linger.ms` is expired. The    tradeoff is higher latency
+  * `batch.size` - The records for a given partition are usually sent in batches to amortize the network roundtrip, improve compression ratio and reduce the load of processing messages in producer and broker. The batch will not be sent to the broker until the `batch.size` is full or `linger.ms` is expired. The tradeoff is higher latency
   * `linger.ms` - The producer will wait for `linger.ms` duration before sending the batch to the broker unless the `batch.size` is full
 * Tuning for latency
-  * `linger.ms = 0` (default) - The producer will send the message as soon as it has some data to send. Batching will still happen if more messages are           available at the    time of sending
+  * `linger.ms = 0` (default) - The producer will send the message as soon as it has some data to send. Batching will still happen if more messages are available at the    time of sending
 * With `enable.idempotence = true`, Kafka can keep the message ordring in a partitioning even with `max.in.flight.requests.per.connection = 5`
-* In the absence of `enable.idempotence = true`, if `max.in.flight.requests.per.connection` is more than `1` and `retries` is also enabled, the message order     can change if the first message fails and the second message succeeds
+* In the absence of `enable.idempotence = true`, if `max.in.flight.requests.per.connection` is more than `1` and `retries` is also enabled, the message order can change if the first message fails and the second message succeeds
 
 ## Kafka Consumers
 
@@ -980,6 +989,7 @@ get /brokers/topics/<topic_name>
 * https://www.confluent.io/blog/apache-kafka-supports-200k-partitions-per-cluster/
 * https://www.confluent.io/blog/design-and-deployment-considerations-for-deploying-apache-kafka-on-aws/
 * https://labs.tabmo.io/rebalancing-kafkas-partitions-803918d8d244
+* https://www.confluent.io/blog/transactions-apache-kafka/
 
 ### Udemy Courses
 
