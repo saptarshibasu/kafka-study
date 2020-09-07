@@ -28,6 +28,8 @@
 
 - [Kafka Consumers](#kafka-consumers)
 
+- [Cross Data Center Replication (Active - Active)](#cross-data-center-replication-active-active)
+
 - [Kafka Streams](#kafka-streams)
 
 - [Kafka Connect](#kafka-connect)
