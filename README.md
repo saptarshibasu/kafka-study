@@ -28,7 +28,7 @@
 
 - [Kafka Consumers](#kafka-consumers)
 
-- [Cross Data Center Replication (Active - Active)](#cross-data-center-replication-active-active)
+- [Cross Data Center Replication](#cross-data-center-replication)
 
 - [Kafka Streams](#kafka-streams)
 
@@ -494,7 +494,7 @@ Note: Application level flushing (`fsync`) gives less leeway to the OS to optimi
 * Tuning for durability 
   * `enable.auto.commit = false`
 
-## Cross Data Center Replication (Active - Active)
+## Cross Data Center Replication
 
 * The proprietary Confluent Replicator and the open source MirrorMaker are the two options available
 * Mirror maker doesn't support all the advanced options like preventing infinite loop for active-active replication, replication of configuration changes, partition changes etc.
