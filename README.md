@@ -112,6 +112,7 @@
 * **Internal topics**
   * __transaction_state
   * __consumer_offsets
+  * __consumer_timestamps
 * CRC32 is used to check if the messages are corrupted
 * **Shutdown** - When a server is stopped gracefully it has two optimizations it will take advantage of:
   * It will sync all its logs to disk to avoid needing to do any log recovery when it restarts (i.e. validating the checksum for all messages in the tail of the log). Log recovery takes time so this speeds up intentional restarts
@@ -366,12 +367,13 @@ Note: Application level flushing (`fsync`) gives less leeway to the OS to optimi
   * `message.max.bytes` - limits the size of a single message batch
   * `max.partition.fetch.bytes` (consumer) & `replica.fetch.max.bytes` must be as large as `message.max.bytes`
   * `compression.type` - Accepts the standard compression codecs ('gzip', 'snappy', 'lz4', 'zstd'). It additionally accepts 'uncompressed' which is equivalent to no compression; and 'producer' which means retain the original compression codec set by the producer
-  * `lz4` is the fastest among the compression algorithms (around 800 mbps)
+* `zstd` should provide the maximum compression ratio with reasonable performance
 
 ## Kafka Producers
 
-* `KafkaProducer<K,V>` is thread safe and sharing a single producer instance across threads will generally be faster than having multiple instances
-* The `send()` method is asynchronous. When called it adds the record to a buffer of pending record sends and immediately returns
+* `KafkaProducer<K,V>` is thread safe and sharing a single producer instance across threads will generally be faster than having multiple instances as it will improve the batching
+* If transactions are used, every producer must have a unique producer id and transactional id and it can have only one transaction at a time. Therefore, when transaction is enabled, each thread should have a separate producer instance
+* The `send()` method is asynchronous. When called, it adds the record to a buffer of pending record sends and immediately returns
 * The producer maintains buffers of unsent records for each partition. These buffers are of a size specified by the `batch.size` config
 * If the buffer is full or metadata is not available, the `send()` method blocks for `max.block.ms` and throws a `TimeoutException` after that
 * **Message Reliability (Typical Scenario)**
@@ -426,9 +428,9 @@ Note: Application level flushing (`fsync`) gives less leeway to the OS to optimi
   * The producer will receive a success response after all the in-sync replicas received the message
   * Message is durable
   * Latency is high
-* `buffer.memory` - The memory buffer that will store the messages before being sent out to a broker. If the buffer runs out of space, the thread will remain     blocked for `max.block.ms` before throwing an exception. This setting should correspond roughly to the total memory the producer will use, but is not a hard    bound since not all memory the producer uses is used for buffering. Some additional memory will be used for compression (if compression is enabled) as well     as for maintaining in-flight requests
+* `buffer.memory` - The memory buffer that will store the messages before being sent out to a broker. If the buffer runs out of space, the thread will remain blocked for `max.block.ms` before throwing an exception. This setting should correspond roughly to the total memory the producer will use, but is not a hard bound since not all memory the producer uses is used for buffering. Some additional memory will be used for compression (if compression is enabled) as well as for maintaining in-flight requests
 * Requests sent to brokers will contain multiple batches, one for each partition with data available to be sent
-* `max.request.size` - The maximum size of a request in bytes. This setting will limit the number of record batches the producer will send in a single request to avoid sending huge requests. This is also effectively a cap on the maximum record batch size. It should not be larger than the broker setting `message.max.bytes` or topic setting `max.message.bytes`
+* `max.request.size` - The maximum size of a request in bytes. This setting will limit the number of record batches (batch size is specified by `batch.size`) the producer will send in a single request to avoid sending huge requests. This is also effectively a cap on the maximum record batch size. It should not be larger than the broker setting `message.max.bytes` or topic setting `max.message.bytes`
 * `compression.type` - By default messages are uncompressed. Supported compression algorithms - `gzip`, `snappy`, `lz4` and `zstd`
 * `client.id` - This can be any string, and will be used by the brokers to identify messages sent from the client. It is used in logging and metrics, and for quotas
 * In 2.4.0 release, the DefaultPartitioner now uses a sticky partitioning strategy. This means that records for specific topic with null keys and no assigned partition will be sent to the same partition until the batch is ready to be sent. When a new batch is created, a new partition is chosen. This decreases latency to produce, but it may result in uneven distribution of records across partitions in edge cases
@@ -453,7 +455,7 @@ Note: Application level flushing (`fsync`) gives less leeway to the OS to optimi
 * `session.timeout.ms` defines how long the coordinator waits after the member’s last heartbeat before it assuming the member failed
   * With a low value, a network jitter or a long garbage collection (GC) might fail the liveness check, causing the group coordinator to remove this member and begin rebalancing
   * With a longer value, there will be a longer partial unavailability when a consumer actually fails
-* A consumer can look up its coordinator by issuing a `FindCoordinatorRequest` to any Kafka broker and reading the `FindCoordinatorResponse` which will contain   the coordinator details
+* A consumer can look up its coordinator by issuing a `FindCoordinatorRequest` to any Kafka broker and reading the `FindCoordinatorResponse` which will contain the coordinator details
 * The consumer can then proceed to commit or fetch offsets from the coordinator broker
 * The broker sends a successful offset commit response to the consumer only after all the replicas of the offsets topic receive the offsets
 * In case the offsets fail to replicate within a configurable timeout, the offset commit will fail and the consumer may retry the commit after backing off
@@ -463,32 +465,54 @@ Note: Application level flushing (`fsync`) gives less leeway to the OS to optimi
   * `key.deserializer`
   * `value.deserializer`
   * `bootstrap.servers`
-  * `group.id` - A unique string that identifies the consumer group this consumer belongs to. This property is required if the consumer uses either the group     management functionality by using subscribe(topic) or the Kafka-based offset management strategy
-  * `heartbeat.interval.ms` - The expected time between heartbeats to the consumer coordinator when using Kafka's group management facilities. Heartbeats are     used to ensure that the consumer's session stays active and to facilitate rebalancing when new consumers join or leave the group. The value must be set       lower than `session.timeout.ms`, but typically should be set no higher than 1/3 of that value. It can be adjusted even lower to control the expected time     for normal rebalances
+  * `group.id` - A unique string that identifies the consumer group this consumer belongs to. This property is required if the consumer uses either the group management functionality by using subscribe(topic) or the Kafka-based offset management strategy
+  * `heartbeat.interval.ms` - The expected time between heartbeats to the consumer coordinator when using Kafka's group management facilities. Heartbeats are used to ensure that the consumer's session stays active and to facilitate rebalancing when new consumers join or leave the group. The value must be set lower than `session.timeout.ms`, but typically should be set no higher than 1/3 of that value. It can be adjusted even lower to control the expected time for normal rebalances
   * `max.partition.fetch.bytes` - The maximum amount of data per-partition the server will return. Records are fetched in batches by the consumer. The value should be as large as `message.max.bytes` (broker config) or `max.message.bytes` (topic config)
   * `fetch.max.bytes` - The maximum amount of data the server should return for a fetch request
-  * `session.timeout.ms` - The timeout used to detect client failures when using Kafka's group management facility. The client sends periodic heartbeats to       indicate its liveness to the broker. If no heartbeats are received by the broker before the expiration of this session timeout, then the broker will remove   this client from the group and initiate a rebalance. Note that the value must be in the allowable range as configured in the broker configuration by          `group.min.session.timeout.ms` and `group.max.session.timeout.ms`
+  * `session.timeout.ms` - The timeout used to detect client failures when using Kafka's group management facility. The client sends periodic heartbeats to indicate its liveness to the broker. If no heartbeats are received by the broker before the expiration of this session timeout, then the broker will remove this client from the group and initiate a rebalance. Note that the value must be in the allowable range as configured in the broker configuration by `group.min.session.timeout.ms` and `group.max.session.timeout.ms`
   * `allow.auto.create.topics` - Should be set to false in production as there is no way to validate topic name
   * `auto.offset.reset` - What to do when there is no initial offset in Kafka or if the current offset does not exist any more on the server (e.g. because that   data has been deleted). Default value is `latest`
-  * `max.poll.interval.ms` - The maximum delay between invocations of `poll()` when using consumer group management. This places an upper bound on the amount     of time that the consumer can be idle before fetching more records. If `poll()` is not called before expiration of this timeout, then the consumer is         considered failed and the group will rebalance in order to reassign the partitions to another member. For consumers using a non-null `group.instance.id`      which reach this timeout, partitions will not be immediately reassigned. Instead, the consumer will stop sending heartbeats and partitions will be            reassigned after expiration of session.timeout.ms
-  * `enable.auto.commit` - If true the consumer's offset will be periodically committed in the background. Default value is true and must be set to false in      production 
+  * `max.poll.interval.ms` - The maximum delay between invocations of `poll()` when using consumer group management. This places an upper bound on the amount of time that the consumer can be idle before fetching more records. If `poll()` is not called before expiration of this timeout, then the consumer is considered failed and the group will rebalance in order to reassign the partitions to another member. For consumers using a non-null `group.instance.id` which reach this timeout, partitions will not be immediately reassigned. Instead, the consumer will stop sending heartbeats and partitions will be reassigned after expiration of session.timeout.ms
+  * `enable.auto.commit` - If true the consumer's offset will be periodically committed in the background. Default value is true and must be set to false in production 
 * **Handling polls for unpredictable message processing time**
   * Move message processing to another thread
   * Allow the consumer to continue calling poll while the processor is still working
   * Some care must be taken to ensure that committed offsets do not get ahead of the actual position
   * Typically, you must disable automatic commits and manually commit processed offsets for records only after the thread has finished handling them 
-  * Note also that you will need to pause the partition so that no new records are received from poll until after thread has finished handling those            previously returned
-* Setting `enable.auto.commit` means that offsets are committed automatically with a frequency controlled by the config `auto.commit.interval.ms` giving us     "at most once" i.e. commiting before the message processing is complete
-* Users can also control when records should be considered as consumed and hence commit their offsets. We will manually commit the offsets only after the       corresponding records have been inserted into the database. This gives us "at least once" delivery semantic where the message will be delivered once, but     in failure cases, it could be possibly delivered twice
-* The consumer application need not use Kafka's built-in offset storage, it can store offsets in a store of its own choosing. The primary use case for this     is allowing the application to store both the offset and the results of the consumption in the same system in a way that both the results and offsets are     stored atomically. This will give us "exactly-once" semantics
+  * Note also that you will need to pause the partition so that no new records are received from poll until after thread has finished handling those previously returned
+* Setting `enable.auto.commit` means that offsets are committed automatically with a frequency controlled by the config `auto.commit.interval.ms` giving us "at most once" i.e. commiting before the message processing is complete
+* Users can also control when records should be considered as consumed and hence commit their offsets. We will manually commit the offsets only after the corresponding records have been inserted into the database. This gives us "at least once" delivery semantic where the message will be delivered once, but in failure cases, it could be possibly delivered twice
+* The consumer application need not use Kafka's built-in offset storage, it can store offsets in a store of its own choosing. The primary use case for this is allowing the application to store both the offset and the results of the consumption in the same system in a way that both the results and offsets are stored atomically. This will give us "exactly-once" semantics
 * Kafka consumer stores the last offset read in a special Kafka topic
 * Tuning for throughput
-  * `fetch.min.bytes` - The broker won't send messages to the consumer, until this much volume of data is available or `fetch.max.wait.ms` duration is over.      It reduces the consumer load for processing a message. The tradeoff is latency
+  * `fetch.min.bytes` - The broker won't send messages to the consumer, until this much volume of data is available or `fetch.max.wait.ms` duration is over. It reduces the consumer load for processing a message. The tradeoff is latency
   * `fetch.max.wait.ms`
 * Tuning for latency
   * `fetch.min.bytes = 1` (default value) - The broker will send message as soon as there is at least 1 byte data available
 * Tuning for durability 
   * `enable.auto.commit = false`
+
+## Cross Data Center Replication (Active - Active)
+
+* The proprietary Confluent Replicator and the open source MirrorMaker are the two options available
+* Mirror maker doesn't support all the advanced options like preventing infinite loop for active-active replication, replication of configuration changes, partition changes etc.
+* In either option, offset topic (`__consumer_offsets`) is never replicated because the offset of the same message may differ across clusters due to various reasons
+* However, the message creation timestamp is copied across clusters and therefore the timestamps can be used to find the offset in a given cluster
+* Replication of topics and logs from one cluster to another can fall into an infinite loop unless one of the following broad strategies are taken
+  * **Same topic name in both clusters** - With `provenance.header.enable=true`, replicator puts provenance information in the message header. If the cluster has the same details as the provenance information, the message is not copied breaking the loop
+  * **Different topic names in each cluster** - A cluster name is usually appended or prepended with the topic name. E.g. topic1_C1 in C! is copied to C2 as is. Also, topic1_C2 is created in C2 and copied to C1
+* **Same topic name in both clusters**
+  * **Pros**
+    * The consumer offsets are translated automatically using the __consumer_timestamps provided the consumer interceptor is enabled a consumer is not already running in the cluster
+  * **Cons**
+    * If producers produce in both clusters, there is no "global ordering" for messages
+    * If consumers consume from both clusters, the same message will be re-processed
+* **Different topic names in each cluster**
+  * **Pros**
+    * Producer and consumers can run in both clusters at the same time without reprocessing any message
+  * **Cons**
+    * An extra topic needs to be created in each cluster and the original topic name needs to prefixed or suffixed with cluster name to get the actual topic name
+    * When falling back to the remote cluster in the event of a local cluster failure, the consumer offset need to be manually set by searching the offset in the remote cluster based on timestamp
 
 ## Kafka Streams
 
@@ -501,13 +525,13 @@ Note: Application level flushing (`fsync`) gives less leeway to the OS to optimi
 * ConsumerConfig.AUTO_OFFSET_RESET_CONFIG (auto.offset.reset) - 
   * It's applicable when the consumer group doesn't have any offset associated in Kafka
   * The possible values are - earliest (read the messages from the begining), latest (read the new messages)
-* Some stream processing applications don’t require state – they are stateless – which means the processing of a message is independent from the processing of    other messages. Examples are when you only need to transform one message at a time, or filter out messages based on some condition
-* In practice, however, most applications require state – they are stateful – in order to work correctly, and this state must be managed in a fault-tolerant      manner. Your application is stateful whenever, for example, it needs to join, aggregate, or window its input data
+* Some stream processing applications don’t require state – they are stateless – which means the processing of a message is independent from the processing of other messages. Examples are when you only need to transform one message at a time, or filter out messages based on some condition
+* In practice, however, most applications require state – they are stateful – in order to work correctly, and this state must be managed in a fault-tolerant manner. Your application is stateful whenever, for example, it needs to join, aggregate, or window its input data
 * Kafka Streams uses RocksDB (other DBs are also pluggable) to store local states
-* States in application as well as remote states in other instances of the application can be queried from within the application. However, the data will be      read-only
+* States in application as well as remote states in other instances of the application can be queried from within the application. However, the data will be read-only
 * For fault-tolerance of state-store, an internal compacted changelog topic is used
 * The state store sends changes to the changelog topic in a batch, either when a default batch size has been reached or when the commit interval is reached
-* If a task crashes and get restarted on different machine, this internal changelog topic is used to recover the state store. Currently, the default              replication factor of internal topics is 1
+* If a task crashes and get restarted on different machine, this internal changelog topic is used to recover the state store. Currently, the default replication factor of internal topics is 1
 * There are two main differences between non-windowed and windowed aggregation with regard to key-design
   * For window aggregation the key is <K,W>, i.e., for each window a new key is used
   * Instead of using a single instance, Streams uses multiple instances (called “segments”) for different time periods
@@ -532,8 +556,8 @@ Note: Application level flushing (`fsync`) gives less leeway to the OS to optimi
   * Sliding time window - A sliding window models a fixed-size window that slides continuously over the time axis; here, two data records are said to be included in the same window if (in the case of symmetric windows) the difference of their timestamps is within the window size. Thus, sliding windows are not aligned to the epoch, but to the data record timestamps
   * Session window
 * `num.stream.threads` - The number of threads per streams app instance
-* It is generally preferable to use `mapValues()` and `flatMapValues()` as they ensure the key has not been modified and thus, the repartitioning step can be     omitted
-* Kafka Streams inserts a repartitioning step if a key-based operation like aggregation or join is preceded by a key changing operation like `selectKey()`,       `map()`, or `flatMap()`
+* It is generally preferable to use `mapValues()` and `flatMapValues()` as they ensure the key has not been modified and thus, the repartitioning step can be omitted
+* Kafka Streams inserts a repartitioning step if a key-based operation like aggregation or join is preceded by a key changing operation like `selectKey()`, `map()`, or `flatMap()`
 * Joining with a KStream will always yield a KStream
 
 ## Kafka Connect
@@ -541,8 +565,8 @@ Note: Application level flushing (`fsync`) gives less leeway to the OS to optimi
 * Kafka Connect is a tool for scalably and reliably streaming data between Apache Kafka and other systems
 * Connectors can be configured with transformations to make lightweight message-at-a-time modifications
 * To copy data between Kafka and another system, users create a Connector for the system they want to pull data from or push data to
-* Connectors come in two flavors: `SourceConnectors` import data from another system (e.g. `JDBCSourceConnector` would import a relational database into Kafka)   and `SinkConnectors` export data (e.g. `HDFSSinkConnector` would export the contents of a Kafka topic to an HDFS file)
-* Connectors do not perform any data copying themselves: their configuration describes the data to be copied, and the Connector is responsible for breaking       that job into a set of Tasks that can be distributed to workers
+* Connectors come in two flavors: `SourceConnectors` import data from another system (e.g. `JDBCSourceConnector` would import a relational database into Kafka) and `SinkConnectors` export data (e.g. `HDFSSinkConnector` would export the contents of a Kafka topic to an HDFS file)
+* Connectors do not perform any data copying themselves: their configuration describes the data to be copied, and the Connector is responsible for breaking that job into a set of Tasks that can be distributed to workers
 * Tasks also come in two corresponding flavors: `SourceTask` and `SinkTask`
 * With an assignment in hand, each Task must copy its subset of the data to or from Kafka
 
@@ -553,7 +577,7 @@ Note: Application level flushing (`fsync`) gives less leeway to the OS to optimi
 * The default behavior can be modified using the following properties:
   * key.subject.name.strategy - Determines how to construct the subject name under which the key schema is registered with the Schema Registry
   * value.subject.name.strategy - Determines how to construct the subject name under which the value schema is registered with Schema Registry
-* Integration with Schema Registry means that Kafka messages do not need to be written with the entire Avro schema. Instead, Kafka messages are written with      the schema id. The producers writing the messages and the consumers reading the messages must be using the same Schema Registry to get the same mapping         between a schema and schema id
+* Integration with Schema Registry means that Kafka messages do not need to be written with the entire Avro schema. Instead, Kafka messages are written with the schema id. The producers writing the messages and the consumers reading the messages must be using the same Schema Registry to get the same mapping between a schema and schema id
 * A producer sends the new schema for Payments to Schema Registry. Schema Registry registers this schema Payments to the subject transactions-value, and returns the schema id of 1 to the producer. The producer caches this mapping between the schema and schema id for subsequent message writes, so it only contacts Schema Registry on the first schema write
 * When a consumer reads this data, it sees the Avro schema id of 1 and sends a schema request to Schema Registry. Schema Registry retrieves the schema associated to schema id 1, and returns the schema to the consumer. The consumer caches this mapping between the schema and schema id for subsequent message reads, so it only contacts Schema Registry the on first schema id read
 * Best practice is to register schemas outside of the client application to control when schemas are registered with Schema Registry and how they evolve.
@@ -572,18 +596,18 @@ Note: Application level flushing (`fsync`) gives less leeway to the OS to optimi
   * DROP TABLE
   * CREATE STREAM AS SELECT (CSAS)
   * CREATE TABLE AS SELECT (CTAS)
-* The DML statements (Declarative verbs that read and modify data in KSQL streams and tables. Data Manipulation Language statements modify data only and don’t    change metadata) include:
+* The DML statements (Declarative verbs that read and modify data in KSQL streams and tables. Data Manipulation Language statements modify data only and don’t change metadata) include:
   * SELECT
   * INSERT INTO
   * CREATE STREAM AS SELECT (CSAS)
   * CREATE TABLE AS SELECT (CTAS)
-* The CSAS and CTAS statements occupy both categories, because they perform both a metadata change, like adding a stream, and they manipulate data, by creating   a derivative of existing records
+* The CSAS and CTAS statements occupy both categories, because they perform both a metadata change, like adding a stream, and they manipulate data, by creating a derivative of existing records
 * In headless mode, KSQL stores metadata in the config topic
 * In interactive mode, KSQL stores metatada in and builds metadata from the KSQL command topic. To secure the metadata, you must secure the command topic
 * SHOW STREAMS and EXPLAIN <query> statements run against the KSQL server that the KSQL client is connected to. They don’t communicate directly with Kafka
 * CREATE STREAM WITH <topic> and CREATE TABLE WITH <topic> write metadata to the KSQL command topic
 * Non-persistent queries based on SELECT that are stateless only read from Kafka topics, for example SELECT … FROM foo WHERE ….
-* Non-persistent queries that are stateful read and write to Kafka, for example, COUNT and JOIN. The data in Kafka is deleted automatically when you terminate    the query with CTRL-C
+* Non-persistent queries that are stateful read and write to Kafka, for example, COUNT and JOIN. The data in Kafka is deleted automatically when you terminate the query with CTRL-C
 
 
 ## Kafka CLI
@@ -816,17 +840,17 @@ bin\windows\kafka-console-consumer.bat ^
 * `net.core.rmem_max = 2097152` (2 MiB)
 * `net.ipv4.tcp_wmem = 4096 65536 2048000` (4 KiB 64 KiB 2 MiB)
 * `net.ipv4.tcp_rmem = 4096 65536 2048000` (4 KiB 64 KiB 2 MiB)
-* `vm.max_map_count` = 65535 - Maximum number of memory map areas a process may have (aka `vm.max_map_count`). By default, on a number of Linux systems, the      value of `vm.max_map_count` is somewhere around 65535. Each log segment, allocated per partition, requires a pair of index/timeindex files, and each of these   files consumes 1 map area. In other words, each log segment uses 2 map areas. Thus, each partition requires minimum 2 map areas, as long as it hosts a single   log segment. That is to say, creating 50000 partitions on a broker will result allocation of 100000 map areas and likely cause broker crash with                OutOfMemoryError (Map failed) on a system with default `vm.max_map_count`
-* File descriptor limits: Kafka uses file descriptors for log segments and open connections. If a broker hosts many partitions, consider that the broker needs    at least (number_of_partitions)*(partition_size/segment_size) to track all log segments in addition to the number of connections the broker makes. We           recommend at least 100,000 allowed file descriptors for the broker processes as a starting point
+* `vm.max_map_count` = 65535 - Maximum number of memory map areas a process may have (aka `vm.max_map_count`). By default, on a number of Linux systems, the value of `vm.max_map_count` is somewhere around 65535. Each log segment, allocated per partition, requires a pair of index/timeindex files, and each of these files consumes 1 map area. In other words, each log segment uses 2 map areas. Thus, each partition requires minimum 2 map areas, as long as it hosts a single   log segment. That is to say, creating 50000 partitions on a broker will result allocation of 100000 map areas and likely cause broker crash with OutOfMemoryError (Map failed) on a system with default `vm.max_map_count`
+* File descriptor limits: Kafka uses file descriptors for log segments and open connections. If a broker hosts many partitions, consider that the broker needs at least (number_of_partitions)*(partition_size/segment_size) to track all log segments in addition to the number of connections the broker makes. We recommend at least 100,000 allowed file descriptors for the broker processes as a starting point
 * Kafka uses heap space very carefully and does not require setting heap sizes more than 6 GB
-* You can do a back-of-the-envelope estimate of memory needs by assuming you want to be able to buffer for 30 seconds and compute your memory need as             `write_throughput * 30`
+* You can do a back-of-the-envelope estimate of memory needs by assuming you want to be able to buffer for 30 seconds and compute your memory need as `write_throughput * 30`
 * A machine with 64 GB of RAM is a decent choice, but 32 GB machines are not uncommon. Less than 32 GB tends to be counterproductive
 * Do not share the same drives used for Kafka data with application logs or other OS filesystem activity to ensure good latency
-* You should use RAID 10 if the additional cost is acceptable. Otherwise, configure your Kafka server with multiple log directories, each directory mounted on    a separate drive
-* You should avoid network-attached storage (NAS). NAS is often slower, displays larger latencies with a wider deviation in average latency, and is a single      point of failure
+* You should use RAID 10 if the additional cost is acceptable. Otherwise, configure your Kafka server with multiple log directories, each directory mounted on a separate drive
+* You should avoid network-attached storage (NAS). NAS is often slower, displays larger latencies with a wider deviation in average latency, and is a single point of failure
 * Modern data-center networking (1 GbE, 10 GbE) is sufficient for the vast majority of clusters.
-* You should avoid clusters that span multiple data centers, even if the data centers are colocated in close proximity; and avoid clusters that span large        geographic distances
-* `num.partitions` - The default number of log partitions for auto-created topics. You should increase this since it is better to over-partition a topic.         Over-partitioning a topic leads to better data balancing and aids consumer parallelism. For keyed data, you should avoid changing the number of partitions in   a topic
+* You should avoid clusters that span multiple data centers, even if the data centers are colocated in close proximity; and avoid clusters that span large geographic distances
+* `num.partitions` - The default number of log partitions for auto-created topics. You should increase this since it is better to over-partition a topic. Over-partitioning a topic leads to better data balancing and aids consumer parallelism. For keyed data, you should avoid changing the number of partitions in a topic
 * Key Service Goals
   * Throughput
   * Latency
@@ -835,8 +859,8 @@ bin\windows\kafka-console-consumer.bat ^
 * Partitions are the unit of parallelism. On both the producer and the broker side, writes to different partitions can be done fully in parallel. Therefore, in   general, more partitions lead to higher throughput. However, following tradeoffs need to be considered
   * More partitions need more open file handles (3 per segment - the segment itself, offset index, time index)
   * More partitions need more memory map areas (2 per segment - the offset index, time index)
-  * ~~More partitions may increase unavailability - In the event of broker failure, the partitions for which the broker is a leader may remain unavailable for    sometime as the partition leader need to be elected by modifying the Zookeeper metadata sequentially for each partition. If the failed broker happens to      be the controller, it would mean a further downtime for the partitions as a new broker elected as the new controller needs to read the metadata from          Zookeeper for each partition in the cluster. A total downtime of a few seconds for the impacted partitions are expected~~ Post release 1.1.0 with the use     of Zookeeper async APIs and batching request to other brokers during failover, things have improved here
-  * More partitions may increase latency as a limited number of threads in a given broker will do replication in the broker for all the partitions in the         cluster. Unless the in-sync replicas are all updated (committed), the message will not be available to the consumers
+  * ~~More partitions may increase unavailability - In the event of broker failure, the partitions for which the broker is a leader may remain unavailable for sometime as the partition leader need to be elected by modifying the Zookeeper metadata sequentially for each partition. If the failed broker happens to be the controller, it would mean a further downtime for the partitions as a new broker elected as the new controller needs to read the metadata from Zookeeper for each partition in the cluster. A total downtime of a few seconds for the impacted partitions are expected~~ Post release 1.1.0 with the use of Zookeeper async APIs and batching request to other brokers during failover, things have improved here
+  * More partitions may increase latency as a limited number of threads in a given broker will do replication in the broker for all the partitions in the cluster. Unless the in-sync replicas are all updated (committed), the message will not be available to the consumers
   * More partitions means more memory requirements for producer as each producer thread will have some buffer for each partiton
 * As a rule of thumb, we recommend each broker to have up to 4,000 partitions and each cluster to have up to 200,000 partitions
 
@@ -856,7 +880,7 @@ bin\windows\kafka-console-consumer.bat ^
 
 * EBS st1 for `log.dirs`
 * d2.xlarge if you’re using instance storage, or r4.xlarge if you’re using EBS
-* Kafka was designed to run within a single data center. As such, we discourage distributing brokers in a single cluster across multiple regions. However, we     recommend “stretching” brokers in a single cluster across availability zones within the same region
+* Kafka was designed to run within a single data center. As such, we discourage distributing brokers in a single cluster across multiple regions. However, we recommend “stretching” brokers in a single cluster across availability zones within the same region
 * Kafka 0.10 supports rack awareness, which makes spreading replicas across availability zones much easier to configure
 
 ### ZooKeeper Basics
@@ -990,6 +1014,7 @@ get /brokers/topics/<topic_name>
 * https://www.confluent.io/blog/design-and-deployment-considerations-for-deploying-apache-kafka-on-aws/
 * https://labs.tabmo.io/rebalancing-kafkas-partitions-803918d8d244
 * https://www.confluent.io/blog/transactions-apache-kafka/
+* https://www.confluent.io/white-paper/disaster-recovery-for-multi-datacenter-apache-kafka-deployments/
 
 ### Udemy Courses
 
