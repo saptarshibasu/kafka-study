@@ -498,6 +498,7 @@ Note: Application level flushing (`fsync`) gives less leeway to the OS to optimi
 
 * The proprietary Confluent Replicator and the open source MirrorMaker are the two options available
 * Mirror maker doesn't support all the advanced options like preventing infinite loop for active-active replication, replication of configuration changes, partition changes etc.
+* Replication to the In-sync replicas in the local data center are done synchrnously, whereas the replication to the remote data center is done asynchronously
 * In either option, offset topic (`__consumer_offsets`) is never replicated because the offset of the same message may differ across clusters due to various reasons
 * However, the message creation timestamp is copied across clusters and therefore the timestamps can be used to find the offset in a given cluster
 * Replication of topics and logs from one cluster to another can fall into an infinite loop unless one of the following broad strategies are taken
@@ -518,27 +519,66 @@ Note: Application level flushing (`fsync`) gives less leeway to the OS to optimi
 
 ## Kafka Streams
 
-* Kafka Streams application do not run inside the Kafka brokers (servers) or the Kafka cluster – they are client-side applications
-* StreamsConfig.APPLICATION_ID_CONFIG (application.id) -
-  * Mandatory
-  * Consumer group id
-  * Internal topic name prefix
-  * Client id prefix
-* ConsumerConfig.AUTO_OFFSET_RESET_CONFIG (auto.offset.reset) - 
-  * It's applicable when the consumer group doesn't have any offset associated in Kafka
-  * The possible values are - earliest (read the messages from the begining), latest (read the new messages)
-* Some stream processing applications don’t require state – they are stateless – which means the processing of a message is independent from the processing of other messages. Examples are when you only need to transform one message at a time, or filter out messages based on some condition
-* In practice, however, most applications require state – they are stateful – in order to work correctly, and this state must be managed in a fault-tolerant manner. Your application is stateful whenever, for example, it needs to join, aggregate, or window its input data
-* Kafka Streams uses RocksDB (other DBs are also pluggable) to store local states
-* States in application as well as remote states in other instances of the application can be queried from within the application. However, the data will be read-only
-* For fault-tolerance of state-store, an internal compacted changelog topic is used
+### Basics
+
+* Kafka Streams applications do not run inside the Kafka brokers (servers) or the Kafka cluster – they are client-side applications. Kafka Streams is a library that is embedded and run within the user client application
+* The unit of parallelism in Kafka Streams is **task**. But, the number of tasks is dependent on threads and input topic partitions
+* One or more partitions get exclusively assigned to a task, and one or more tasks get exclusively assigned to a thread
+* The maximum limit of tasks across all the application instances is the maximum number of input topic partitions
+* Similarly the maximum limit of threads across all application instances is the maximum number of tasks possible
+* Assigning more threads of application instances will keep the extra threads and instances idle, but they can take over tasks if one or more instances die
+* Some stream processing applications don’t require state – they are **stateless** – which means the processing of a message is independent from the processing of other messages. Examples are when you only need to transform one message at a time, or filter out messages based on some condition
+* In practice, however, most applications require state – they are **stateful** – in order to work correctly, and this state must be managed in a fault-tolerant manner. Your application is stateful whenever, for example, it needs to join, aggregate, or window its input data
+* Kafka Streams uses **RocksDB** (other DBs are also pluggable) to store local states
+* Local state in an application instance as well as remote states in other instances of the application can be queried from within the application. However, the data will be **read-only**
+* For fault-tolerance of the state-store, an internal compacted **changelog topic** is used
+* The changelog topic is also partitioned so that each task can exclusively be assigned a fair share of partitions
 * The state store sends changes to the changelog topic in a batch, either when a default batch size has been reached or when the commit interval is reached
-* If a task crashes and get restarted on different machine, this internal changelog topic is used to recover the state store. Currently, the default replication factor of internal topics is 1
+* If a machine, which runs tasks, fails and the tasks are restarted on a different machine, this internal changelog topic is replayed on the state store of the restarted task to restore its state
+* To minimize this restoration time, users can configure their applications to have standby replicas of local states (i.e. fully replicated copies of the state) in other application instances
+* When a task migration happens, Kafka Streams attempts to assign a task to an application instance where such a standby replica already exists
+* Kafka Streams provides two APIs
+  * **Kafka Streams DSL**
+    * A high level API
+    * Provides the most common data transformation operations such as map, filter, join, and aggregations out of the box
+    * Built on top of the Streams Processor API
+    * Provides built-in abstractions for streams and tables in the form of **KStream**, **KTable**, and **GlobalKTable**. A topic can be processed in the form of **KStream**, **KTable**, and **GlobalKTable**
+  * **Processor API**
+    * A low level API
+    * Provides more flexibility than the DSL but at the expense of requiring more manual work
+* **KTable** & **GlobalKTable** contain the latest value of each key (similar to a database table) and each record represents an UPDATE
+* **KStream** provides all values for a given key and exh record represents an INSERT
+* Unlike KTables, **GlobalKTables** load all partitions of the input topic within each application instance. Thus
+  * GlobalKTables does not need to be co-partitioned with the input data
+  * Input data can be joined with the GlobalKTable on any field (not necessarily the key)
+  * GlobalKTable has more storage requirement that KTable as it loads all partitions in each app instance
+  * GlobalKTables are good for broadcasting lookup data to all instances (a.k.a. star joins)
+  * You must provide a name for the table (more precisely, for the internal state store that backs the table). This is required for supporting interactive queries against the table
+* **KTables** 
+  * the local KTable instance of every application instance will be populated with data from only a subset of the partitions of the input topic. Collectively, across all application instances, all input topic partitions are read and processed
+  * You must provide a name for the table (more precisely, for the internal state store that backs the table). This is required for supporting interactive queries against the table
+* The computational logic of a Kafka Streams application is defined as a processor topology, which is a graph of stream processors (nodes) and streams (edges)
+* The steps of writing a stream processing application:
+  * Specify one or more input streams that are read from Kafka topics
+  * Compose transformations on these streams
+  * Write the resulting output streams back to Kafka topics, or expose the processing results of your application directly to other applications through interactive queries (e.g., via a REST API)
+* The KStream and KTable interfaces support a variety of transformation operations. Each of these operations can be translated into one or more connected processors into the underlying processor topology
+* Some KStream transformations may generate 
+  * one or more KStream objects, for example: - filter and map on a KStream will generate another KStream - branch on KStream can generate multiple KStreams
+  * a KTable object, for example an aggregation of a KStream also yields a KTable
+* All KTable transformation operations can only generate another KTable. However, the Kafka Streams DSL does provide a special function that converts a KTable representation into a KStream
+* All of these KStream and KTable transformation methods can be chained together to compose a complex processor topology
+* **Interactive Queries** - Allows an external application query the state of Kafka stream application instances. For e.g. a KTable local store in a given application instance does not contain the complete data - it contains the data of a subset of all partitions. If an external application queries the info of a given key and the query is routed through a load balancer, it can land in any of the app instances. Now, **interactive queries** will allow the application instance serve that request even if the data is present in the data store of some other app instance
+* **Interactive queries** work in the following way:
+  * The app developer needs to provide an endpoint in the Kafka stream application instance to query the locat data store
+  * The app developer needs to configure the host:port pair of the endpoint in the property `application.server`. Each instance will have its own endpoint details in thi property
+  * Kafka Streams keep track of this information by piggybacking on the consumer group membership protocol. Thus every app instance will discover the endpoint host:port details of every other app instance
+  * Kafka streams provide APIs to query this endpoint metadata which allows an app instance determine the details of the app instance that holds the value of a given key
+  * The app instance serving the request of the external app can now use the host:port details obtained from the metadata to query the appropriate app instance for the data and return the same to the external app
 * There are two main differences between non-windowed and windowed aggregation with regard to key-design
   * For window aggregation the key is <K,W>, i.e., for each window a new key is used
   * Instead of using a single instance, Streams uses multiple instances (called “segments”) for different time periods
 * After the window retention time has passed old segments can be dropped. Thus, RocksDB memory requirement does not grow infinitely
-* In contrast to KTable a GlobalKTable's state holds a full copy of the underlying topic, thus all keys can be queried locally
 * Stateless transformations – Branch, Filter, Inverse Filter, FlatMap, ForEach, GroupByKey, GroupBy, Map, Peek, Print, SelectKey, Table To Stream
 * Join operands - KStream-to-Kstream, KTable-to-KTable, Kstream-to-Ktable, KStream-to-GlobalKTable
 * KStream-KStream join is always windowed join
@@ -561,6 +601,17 @@ Note: Application level flushing (`fsync`) gives less leeway to the OS to optimi
 * It is generally preferable to use `mapValues()` and `flatMapValues()` as they ensure the key has not been modified and thus, the repartitioning step can be omitted
 * Kafka Streams inserts a repartitioning step if a key-based operation like aggregation or join is preceded by a key changing operation like `selectKey()`, `map()`, or `flatMap()`
 * Joining with a KStream will always yield a KStream
+
+### Parameters
+
+* **StreamsConfig.APPLICATION_ID_CONFIG (application.id)** - It is a mandatory parameter and is used to derive
+  * Consumer group id
+  * Internal topic name prefix
+  * Client id prefix
+* **ConsumerConfig.AUTO_OFFSET_RESET_CONFIG (auto.offset.reset)** - 
+  * It's applicable when the consumer group doesn't have any offset associated in Kafka
+  * The possible values are - **earliest** (read the messages from the begining), **latest** (read the new messages)
+
 
 ## Kafka Connect
 
