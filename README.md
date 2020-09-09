@@ -519,8 +519,6 @@ Note: Application level flushing (`fsync`) gives less leeway to the OS to optimi
 
 ## Kafka Streams
 
-### Basics
-
 * Kafka Streams applications do not run inside the Kafka brokers (servers) or the Kafka cluster – they are client-side applications. Kafka Streams is a library that is embedded and run within the user client application
 * The unit of parallelism in Kafka Streams is **task**. But, the number of tasks is dependent on threads and input topic partitions
 * One or more partitions get exclusively assigned to a task, and one or more tasks get exclusively assigned to a thread
@@ -593,17 +591,15 @@ Note: Application level flushing (`fsync`) gives less leeway to the OS to optimi
 * Kafka streams cannot verify the co-partitioning requirement for partition strategy
 * Kafka streams throws `TopologyBuilderException` if the number of partitions on both sides of the join are not same
 * Stream joining windows
-  * Tumbling time window - Fixed-size, non-overlapping, gap-less windows
-  * Hopping time window - Hopping time windows are windows based on time intervals. They model fixed-sized, (possibly) overlapping windows. A hopping window is defined by two properties: the window’s size and its advance interval (aka “hop”). The advance interval specifies by how much a window moves forward relative to the previous one
-  * Sliding time window - A sliding window models a fixed-size window that slides continuously over the time axis; here, two data records are said to be included in the same window if (in the case of symmetric windows) the difference of their timestamps is within the window size. Thus, sliding windows are not aligned to the epoch, but to the data record timestamps
-  * Session window
-* `num.stream.threads` - The number of threads per streams app instance
+  * **Tumbling time window** - Fixed-size, non-overlapping, gap-less windows
+  * **Hopping time window** - Hopping time windows are windows based on time intervals. They model fixed-sized, (possibly) overlapping windows. A hopping window is defined by two properties: the window’s size and its advance interval (aka “hop”). The advance interval specifies by how much a window moves forward relative to the previous one
+  * **Sliding time window** - A sliding window models a fixed-size window that slides continuously over the time axis; here, two data records are said to be included in the same window if (in the case of symmetric windows) the difference of their timestamps is within the window size. Thus, sliding windows are not aligned to the epoch, but to the data record timestamps
+  * **Session window**
 * It is generally preferable to use `mapValues()` and `flatMapValues()` as they ensure the key has not been modified and thus, the repartitioning step can be omitted
 * Kafka Streams inserts a repartitioning step if a key-based operation like aggregation or join is preceded by a key changing operation like `selectKey()`, `map()`, or `flatMap()`
 * Joining with a KStream will always yield a KStream
-
-### Parameters
-
+* Any streams and tables may be (continuously) written back to a Kafka topic with the method `to()`
+* You may also leverage the Processor API from the DSL
 * **StreamsConfig.APPLICATION_ID_CONFIG (application.id)** - It is a mandatory parameter and is used to derive
   * Consumer group id
   * Internal topic name prefix
@@ -611,6 +607,7 @@ Note: Application level flushing (`fsync`) gives less leeway to the OS to optimi
 * **ConsumerConfig.AUTO_OFFSET_RESET_CONFIG (auto.offset.reset)** - 
   * It's applicable when the consumer group doesn't have any offset associated in Kafka
   * The possible values are - **earliest** (read the messages from the begining), **latest** (read the new messages)
+* `num.stream.threads` - The number of threads per streams app instance
 
 
 ## Kafka Connect
